@@ -1,682 +1,1239 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random
+import os
+from io import BytesIO, StringIO
 import plotly.graph_objects as go
-import colorsys
+from plotly.io import from_json, to_json
+from datetime import datetime
+import pickle
 
-# 初始化session_state
-if 'flow_df' not in st.session_state:
-    st.session_state.flow_df = None
-if 'source_nodes' not in st.session_state:
-    st.session_state.source_nodes = []
-if 'target_nodes' not in st.session_state:
-    st.session_state.target_nodes = []
-if 'selected_sources' not in st.session_state:
-    st.session_state.selected_sources = []
-if 'selected_targets' not in st.session_state:
-    st.session_state.selected_targets = []
-if 'start_period' not in st.session_state:
-    st.session_state.start_period = None
-if 'end_period' not in st.session_state:
-    st.session_state.end_period = None
-if 'highlight_keyword' not in st.session_state:
-    st.session_state.highlight_keyword = "家乐"
-if 'show_rank_value' not in st.session_state:
-    st.session_state.show_rank_value = True
 
-# 设置页面配置
+# 初始化session状态
+essential_states = {
+    'flow_df': None,
+    'brand_mapping': None,
+    'original_df': None,
+    'marked_data': None,
+    'split_flow_data': None,
+    'sorted_split_data': None,
+    'split_flow_data_start': None,
+    'sorted_split_data_start': None,
+    'sankey_fig_start': None,
+    'split_flow_data_end': None,
+    'sorted_split_data_end': None,
+    'sankey_fig_end': None,
+    'selected_product': None,
+    'sankey_fig': None,
+    'top_products': None,
+    'history_snapshots': [],
+    'current_snapshot_id': None,
+    'uploaded_file_processed': False,
+    'start_period': None,
+    'end_period': None
+}
+
+for key, value in essential_states.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+# 历史记录快照配置
+SNAPSHOT_FILE = "analysis_snapshots.pkl"
+
+# 定义中间层标签配置
+MIDDLE_LAYER_CONFIG = [
+    {"label": "期初_新增", "color": "rgba(153, 102, 255, 0.8)"},
+    {"label": "期初_不同品牌不同产品", "color": "rgba(54, 162, 235, 0.8)"},
+    {"label": "期初_同品牌不同产品", "color": "rgba(153, 153, 255, 0.8)"},
+    {"label": "同品牌同产品", "color": "rgba(102, 204, 102, 0.8)"},
+    {"label": "期末_同品牌不同产品", "color": "rgba(102, 255, 255, 0.8)"},
+    {"label": "期末_不同品牌不同产品", "color": "rgba(75, 192, 192, 0.8)"},
+    {"label": "期末_流失", "color": "rgba(255, 99, 132, 0.8)"}
+]
+
+MIDDLE_LAYER_ORDER = [item["label"] for item in MIDDLE_LAYER_CONFIG]
+LABEL_COLOR_MAP = {item["label"]: item["color"] for item in MIDDLE_LAYER_CONFIG}
+LABEL_ORDER = MIDDLE_LAYER_ORDER
+label_sort_mapping = {label: idx for idx, label in enumerate(LABEL_ORDER)}
+
+# 页面配置
 st.set_page_config(
-    page_title="品牌流量桑基图分析",
+    page_title="产品品牌流量分析工具",
     page_icon="📊",
-    layout="wide"  # 使用宽布局增加空间
+    layout="wide"
 )
 
+# Token校验函数（实际使用时可启用）
+def check_token():
+    token = st.sidebar.text_input("请输入访问令牌", type="password")
+    if token != VALID_TOKEN:
+        st.error("令牌无效，请重新输入")
+        st.stop()
+    st.sidebar.success("令牌验证通过")
+
+# 加载历史快照
+def load_snapshots_from_file():
+    try:
+        if os.path.exists(SNAPSHOT_FILE):
+            with open(SNAPSHOT_FILE, 'rb') as f:
+                return pickle.load(f)
+        return []
+    except Exception as e:
+        st.error(f"加载快照文件失败: {str(e)}")
+        return []
+
+# 保存历史快照
+def save_snapshots_to_file(snapshots):
+    try:
+        with open(SNAPSHOT_FILE, 'wb') as f:
+            pickle.dump(snapshots, f)
+        return True
+    except Exception as e:
+        st.error(f"保存快照失败: {str(e)}")
+        return False
+
+# 初始化时加载历史快照
+if not st.session_state.history_snapshots:
+    loaded_snapshots = load_snapshots_from_file()
+    st.session_state.history_snapshots = loaded_snapshots
+
+# 保存快照
+def save_snapshot(start_period, end_period, product):
+    if st.session_state.sorted_split_data is None or st.session_state.sankey_fig is None:
+        st.warning("没有可保存的分析结果")
+        return False
+        
+    snapshot_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    try:
+        snapshot = {
+            "id": snapshot_id,
+            "timestamp": datetime.now(),
+            "metadata": {
+                "start_period": start_period,
+                "end_period": end_period,
+                "product": product
+            },
+            "data": {
+                "split_flow_csv": st.session_state.sorted_split_data.to_csv(index=False),
+                "sankey_fig_json": to_json(st.session_state.sankey_fig),
+                "split_flow_start_csv": st.session_state.sorted_split_data_start.to_csv(index=False) if st.session_state.sorted_split_data_start is not None else None,
+                "sankey_fig_start_json": to_json(st.session_state.sankey_fig_start) if st.session_state.sankey_fig_start is not None else None,
+                "split_flow_end_csv": st.session_state.sorted_split_data_end.to_csv(index=False) if st.session_state.sorted_split_data_end is not None else None,
+                "sankey_fig_end_json": to_json(st.session_state.sankey_fig_end) if st.session_state.sankey_fig_end is not None else None,
+                "marked_data_csv": st.session_state.marked_data.to_csv(index=False) if st.session_state.marked_data is not None else None
+            }
+        }
+        
+        st.session_state.history_snapshots.append(snapshot)
+        st.session_state.current_snapshot_id = snapshot_id
+        save_snapshots_to_file(st.session_state.history_snapshots)
+        return True
+    except Exception as e:
+        st.error(f"创建快照时出错: {str(e)}")
+        return False
+
+# 从快照加载数据
+def load_from_snapshot(snapshot_id):
+    try:
+        for snapshot in st.session_state.history_snapshots:
+            if snapshot["id"] == snapshot_id:
+                required_keys = ["split_flow_csv", "sankey_fig_json", 
+                                "split_flow_start_csv", "sankey_fig_start_json",
+                                "split_flow_end_csv", "sankey_fig_end_json",
+                                "marked_data_csv"]
+                if not all(key in snapshot["data"] for key in required_keys):
+                    st.error("快照数据不完整，无法加载")
+                    return False
+
+                # 加载核心数据
+                st.session_state.sorted_split_data = pd.read_csv(
+                    StringIO(snapshot["data"]["split_flow_csv"])
+                )
+                
+                st.session_state.sankey_fig = from_json(
+                    snapshot["data"]["sankey_fig_json"]
+                )
+                
+                # 加载新增视图数据
+                if snapshot["data"]["split_flow_start_csv"]:
+                    st.session_state.sorted_split_data_start = pd.read_csv(
+                        StringIO(snapshot["data"]["split_flow_start_csv"])
+                    )
+                    st.session_state.sankey_fig_start = from_json(
+                        snapshot["data"]["sankey_fig_start_json"]
+                    )
+                
+                if snapshot["data"]["split_flow_end_csv"]:
+                    st.session_state.sorted_split_data_end = pd.read_csv(
+                        StringIO(snapshot["data"]["split_flow_end_csv"])
+                    )
+                    st.session_state.sankey_fig_end = from_json(
+                        snapshot["data"]["sankey_fig_end_json"]
+                    )
+                
+                # 加载标记数据
+                if snapshot["data"]["marked_data_csv"]:
+                    st.session_state.marked_data = pd.read_csv(
+                        StringIO(snapshot["data"]["marked_data_csv"])
+                    )
+                
+                # 加载元数据
+                st.session_state.selected_product = snapshot["metadata"]["product"]
+                st.session_state.start_period = snapshot["metadata"]["start_period"]
+                st.session_state.end_period = snapshot["metadata"]["end_period"]
+                st.session_state.current_snapshot_id = snapshot_id
+                
+                return True
+        
+        st.error(f"未找到ID为 {snapshot_id} 的快照")
+        return False
+    except Exception as e:
+        st.error(f"加载快照时出错: {str(e)}")
+        return False
+
+# 删除快照
+def delete_snapshot(snapshot_id):
+    try:
+        st.session_state.history_snapshots = [
+            s for s in st.session_state.history_snapshots 
+            if s["id"] != snapshot_id
+        ]
+        if st.session_state.current_snapshot_id == snapshot_id:
+            st.session_state.current_snapshot_id = None
+        save_snapshots_to_file(st.session_state.history_snapshots)
+        return True
+    except Exception as e:
+        st.error(f"删除快照时出错: {str(e)}")
+        return False
+
+# 生成桑基图函数（修复标签重影问题）
+def generate_sorted_sankey(split_flow_data, top_products=None, use_full_products=False):
+    def aggregate_node(node, top_products, use_full_products):
+        if use_full_products or not top_products:
+            return node
+            
+        special_tags = ["新增门店", "门店流失", "产品流失", "新增产品", "其他产品"]
+        if node in special_tags or node in MIDDLE_LAYER_ORDER:
+            return node
+            
+        if node.startswith("期初_"):
+            base_node = node[3:]
+            if base_node not in top_products and base_node not in special_tags:
+                return "期初_其他产品"
+            return node
+            
+        if node.startswith("期末_"):
+            base_node = node[3:]
+            if base_node not in top_products and base_node not in special_tags:
+                return "期末_其他产品"
+            return node
+            
+        return node
+    
+    def process_source_node(node):
+        if "期初" in node or "新增" in node or node in MIDDLE_LAYER_ORDER:
+            return node
+        return f"期初_{node}"
+    
+    def process_target_node(node):
+        if "期末" in node or "流失" in node or node in MIDDLE_LAYER_ORDER:
+            return node
+        return f"期末_{node}"
+    
+    processed_data = split_flow_data.copy()
+    processed_data['源节点'] = processed_data['源节点'].apply(process_source_node)
+    processed_data['目标节点'] = processed_data['目标节点'].apply(process_target_node)
+    
+    if not use_full_products and top_products is not None:
+        processed_data['源节点'] = processed_data['源节点'].apply(
+            lambda x: aggregate_node(x, top_products, use_full_products)
+        )
+        processed_data['目标节点'] = processed_data['目标节点'].apply(
+            lambda x: aggregate_node(x, top_products, use_full_products)
+        )
+        processed_data = processed_data.groupby(
+            ['源节点', '目标节点', '流向类型', '标签类别'], 
+            as_index=False
+        )['流量'].sum()
+    
+    # 提取各层节点（去重处理）
+    layer1_nodes = []
+    for _, row in processed_data.iterrows():
+        if row['流向类型'] == '期初到标签':
+            node = row['源节点']
+            if node not in layer1_nodes and (node.startswith("期初_") or node in ["新增门店", "新增产品"]):
+                layer1_nodes.append(node)
+    
+    layer2_nodes = [node for node in MIDDLE_LAYER_ORDER if node in processed_data['源节点'].values or node in processed_data['目标节点'].values]
+    
+    layer3_nodes = []
+    for _, row in processed_data.iterrows():
+        if row['流向类型'] == '标签到期末':
+            node = row['目标节点']
+            if node not in layer3_nodes and (node.startswith("期末_") or node in ["门店流失", "产品流失"]):
+                layer3_nodes.append(node)
+    
+    # 关键修复1：节点去重（避免重复标签）
+    all_nodes = layer1_nodes + layer2_nodes + layer3_nodes
+    unique_nodes = list(dict.fromkeys(all_nodes))  # 去重并保留顺序
+    
+    # 计算中间层百分比
+    middle_layer_inflows = {}
+    total_middle_inflow = 0
+    for node in layer2_nodes:
+        inflow = processed_data[
+            (processed_data['目标节点'] == node) & 
+            (processed_data['流向类型'] == '期初到标签')
+        ]['流量'].sum()
+        middle_layer_inflows[node] = inflow
+        total_middle_inflow += inflow
+    
+    layer2_labels_with_percent = []
+    for node in layer2_nodes:
+        if total_middle_inflow > 0:
+            percentage = (middle_layer_inflows[node] / total_middle_inflow) * 100
+            layer2_labels_with_percent.append(f"{node}\n{round(percentage)}%")
+        else:
+            layer2_labels_with_percent.append(node)
+    
+    # 关键修复2：标签与去重节点一一对应
+    labels = []
+    for node in unique_nodes:
+        if node in layer1_nodes:
+            labels.append(node)
+        elif node in layer2_nodes:
+            idx = layer2_nodes.index(node)
+            labels.append(layer2_labels_with_percent[idx])
+        elif node in layer3_nodes:
+            labels.append(node)
+    
+    node_indices = {node: idx for idx, node in enumerate(unique_nodes)}
+    
+    # 连接配置
+    links_source = [node_indices[row['源节点']] for _, row in processed_data.iterrows()]
+    links_target = [node_indices[row['目标节点']] for _, row in processed_data.iterrows()]
+    links_value = processed_data['流量'].tolist()
+    
+    # 颜色配置
+    def get_node_color(node):
+        if node in LABEL_COLOR_MAP:
+            return LABEL_COLOR_MAP[node]
+        elif node.startswith("期初_") or node in ["新增门店", "新增产品"]:
+            connected_labels = processed_data[processed_data['源节点'] == node]['标签类别'].unique()
+            if len(connected_labels) > 0:
+                label_color = LABEL_COLOR_MAP.get(connected_labels[0], "rgba(200, 200, 200, 0.8)")
+                return label_color.replace("0.8", "0.4").replace("0.6", "0.3")
+            return "rgba(200, 200, 200, 0.4)"
+        elif node.startswith("期末_") or node in ["门店流失", "产品流失"]:
+            connected_labels = processed_data[processed_data['目标节点'] == node]['标签类别'].unique()
+            if len(connected_labels) > 0:
+                label_color = LABEL_COLOR_MAP.get(connected_labels[0], "rgba(200, 200, 200, 0.8)")
+                return label_color.replace("0.8", "0.4").replace("0.6", "0.3")
+            return "rgba(200, 200, 200, 0.4)"
+        else:
+            return "rgba(200, 200, 200, 0.8)"
+    
+    node_colors = [get_node_color(node) for node in unique_nodes]
+    
+    link_colors = []
+    for _, row in processed_data.iterrows():
+        label_color = LABEL_COLOR_MAP.get(row['标签类别'], "rgba(200, 200, 200, 0.8)")
+        link_color = label_color.replace("0.8", "0.3").replace("0.6", "0.2")
+        link_colors.append(link_color)
+    
+    # 关键修复3：优化节点位置计算（避免重叠）
+    node_x, node_y = [], []
+    
+    # 第一层节点位置（x固定0.1，y轴均匀分布在0.2-0.8之间）
+    level_count = len(layer1_nodes)
+    for i in range(level_count):
+        node_x.append(0.1)
+        if level_count == 1:
+            node_y.append(0.5)  # 单个节点居中
+        else:
+            # 缩小分布范围，避免边缘溢出
+            node_y.append(0.2 + (0.6 / (level_count - 1)) * i)
+    
+    # 第二层节点位置（x固定0.5）
+    level_count = len(layer2_nodes)
+    for i in range(level_count):
+        node_x.append(0.5)
+        if level_count == 1:
+            node_y.append(0.5)
+        else:
+            node_y.append(0.2 + (0.6 / (level_count - 1)) * i)
+    
+    # 第三层节点位置（x固定0.9）
+    level_count = len(layer3_nodes)
+    for i in range(level_count):
+        node_x.append(0.9)
+        if level_count == 1:
+            node_y.append(0.5)
+        else:
+            node_y.append(0.2 + (0.6 / (level_count - 1)) * i)
+    
+    # 创建桑基图（关键修复4：禁用自动排列，使用手动坐标）
+    fig = go.Figure(data=[go.Sankey(
+        arrangement="none",  # 禁用自动排列，避免与手动坐标冲突
+        node=dict(
+            pad=15,  # 增加节点间距
+            thickness=20,
+            line=dict(color="black", width=0.5),
+            label=labels,
+            color=node_colors,
+            x=node_x,
+            y=node_y
+        ),
+        link=dict(
+            source=links_source,
+            target=links_target,
+            value=links_value,
+            color=link_colors
+        )
+    )])
+    
+    # 添加图例
+    legend_items = []
+    for item in MIDDLE_LAYER_CONFIG:
+        try:
+            rgba_str = item["color"].replace("rgba", "").replace("(", "").replace(")", "")
+            r, g, b = map(lambda x: int(float(x.strip())), rgba_str.split(",")[:3])
+            legend_items.append(f'<span style="color:rgb({r},{g},{b})">●</span> {item["label"]}')
+        except:
+            legend_items.append(f'<span style="color:gray">●</span> {item["label"]}')
+    
+    fig.add_annotation(
+        text=" ".join(legend_items),
+        x=0.5, y=1.05,
+        xref="paper", yref="paper",
+        showarrow=False, font=dict(size=10),
+        align="center"
+    )
+    
+    # 图表尺寸
+    max_level_count = max(len(layer1_nodes), len(layer2_nodes), len(layer3_nodes))
+    height = max_level_count * 50 + 200
+    height = min(max(height, 500), 800)  # 适当增加最大高度
+    
+    # 关键修复5：优化字体兼容性
+    fig.update_layout(
+        title_text="产品流量三层桑基图（中间节点带百分比）",
+        font=dict(
+            family="SimHei, Microsoft YaHei, Arial",  # 兼容多环境字体
+            size=10,  # 略微增大字体避免重叠
+            color="rgb(30, 30, 30)"
+        ),
+        width=800,  # 增加宽度
+        height=height,
+        margin=dict(l=80, r=80, t=100, b=60),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)"
+    )
+    
+    return fig
+
+# 生成期末分析报告
+def generate_end_report(marked_data, product):
+    if marked_data is None or marked_data.empty:
+        return "无可用数据生成期末分析报告。"
+    
+    relevant_data = marked_data[marked_data['标签类别'] != "不涉及目标产品"]
+    if relevant_data.empty:
+        return f"无涉及产品 {product} 的相关数据，无法生成期末分析报告。"
+    
+    start_total = relevant_data[relevant_data['期初产品'] == product]['流量'].sum() / 10000
+    
+    if start_total == 0:
+        return f"产品 {product} 期初金额为0，无法生成有效期末分析报告。"
+    
+    same_product = relevant_data[
+        (relevant_data['标签类别'] == "同品牌同产品") & 
+        (relevant_data['期初产品'] == product)
+    ]['流量'].sum() / 10000
+    
+    same_brand_other = relevant_data[
+        (relevant_data['标签类别'] == "期末_同品牌不同产品") & 
+        (relevant_data['期初产品'] == product)
+    ]['流量'].sum() / 10000
+    
+    other_brand = relevant_data[
+        (relevant_data['标签类别'] == "期末_不同品牌不同产品") & 
+        (relevant_data['期初产品'] == product)
+    ]['流量'].sum() / 10000
+    
+    store_loss = relevant_data[
+        (relevant_data['标签类别'] == "期末_流失") & 
+        (relevant_data['期初产品'] == product) &
+        (relevant_data['期末产品'] == "门店流失")
+    ]['流量'].sum() / 10000
+    
+    product_loss = relevant_data[
+        (relevant_data['标签类别'] == "期末_流失") & 
+        (relevant_data['期初产品'] == product) &
+        (relevant_data['期末产品'] == "产品流失")
+    ]['流量'].sum() / 10000
+    
+    same_brand_details = relevant_data[
+        (relevant_data['标签类别'] == "期末_同品牌不同产品") & 
+        (relevant_data['期初产品'] == product)
+    ].groupby('期末产品')['流量'].sum().reset_index()
+    same_brand_details = same_brand_details.sort_values('流量', ascending=False).head(2)
+    same_brand_details['流量'] = same_brand_details['流量'] / 10000
+    
+    other_brand_details = relevant_data[
+        (relevant_data['标签类别'] == "期末_不同品牌不同产品") & 
+        (relevant_data['期初产品'] == product)
+    ].groupby('期末产品')['流量'].sum().reset_index()
+    other_brand_details = other_brand_details.sort_values('流量', ascending=False).head(2)
+    other_brand_details['流量'] = other_brand_details['流量'] / 10000
+    
+    report = f"期初分析报告：{product}\n\n"
+    report += f"产品期初金额为{start_total:.2f}万。"
+    report += f"期末仍旧使用本品的金额为{same_product:.2f}万，占比{same_product/start_total*100:.2f}%；"
+    report += f"转换为同品牌的其它产品的金额为{same_brand_other:.2f}万，占比{same_brand_other/start_total*100:.2f}%，"
+    
+    if not same_brand_details.empty:
+        details = []
+        for i, row in same_brand_details.iterrows():
+            details.append(f"主要为{row['期末产品']}（金额{row['流量']:.2f}万，占比{row['流量']/start_total*100:.2f}%）")
+        report += "、".join(details) + "；"
+    else:
+        report += "无主要转换产品；"
+    
+    report += f"转换为其它品牌产品的金额为{other_brand:.2f}万，占比{other_brand/start_total*100:.2f}%，"
+    
+    if not other_brand_details.empty:
+        details = []
+        for i, row in other_brand_details.iterrows():
+            details.append(f"主要为{row['期末产品']}（金额{row['流量']:.2f}万，占比{row['流量']/start_total*100:.2f}%）")
+        report += "、".join(details) + "；"
+    else:
+        report += "无主要转换产品；"
+    
+    report += f"门店流失金额为{store_loss:.2f}万，占比{store_loss/start_total*100:.2f}%；"
+    report += f"产品流失金额为{product_loss:.2f}万，占比{product_loss/start_total*100:.2f}%。\n\n"
+    
+    return report
+
+# 生成期初分析报告
+def generate_start_report(marked_data, product):
+    if marked_data is None or marked_data.empty:
+        return "无可用数据生成期初分析报告。"
+    
+    relevant_data = marked_data[marked_data['标签类别'] != "不涉及目标产品"]
+    if relevant_data.empty:
+        return f"无涉及产品 {product} 的相关数据，无法生成期初分析报告。"
+    
+    end_total = relevant_data[relevant_data['期末产品'] == product]['流量'].sum() / 10000
+    
+    if end_total == 0:
+        return f"产品 {product} 期末金额为0，无法生成有效期初分析报告。"
+    
+    same_product = relevant_data[
+        (relevant_data['标签类别'] == "同品牌同产品") & 
+        (relevant_data['期末产品'] == product)
+    ]['流量'].sum() / 10000
+    
+    new_stores = relevant_data[
+        (relevant_data['标签类别'] == "期初_新增") & 
+        (relevant_data['期末产品'] == product) &
+        (relevant_data['期初产品'] == "新增门店")
+    ]['流量'].sum() / 10000
+    
+    new_users = relevant_data[
+        (relevant_data['标签类别'] == "期初_新增") & 
+        (relevant_data['期末产品'] == product) &
+        (relevant_data['期初产品'] == "新增产品")
+    ]['流量'].sum() / 10000
+    
+    same_brand_other = relevant_data[
+        (relevant_data['标签类别'] == "期初_同品牌不同产品") & 
+        (relevant_data['期末产品'] == product)
+    ]['流量'].sum() / 10000
+    
+    other_brand = relevant_data[
+        (relevant_data['标签类别'] == "期初_不同品牌不同产品") & 
+        (relevant_data['期末产品'] == product)
+    ]['流量'].sum() / 10000
+    
+    same_brand_details = relevant_data[
+        (relevant_data['标签类别'] == "期初_同品牌不同产品") & 
+        (relevant_data['期末产品'] == product)
+    ].groupby('期初产品')['流量'].sum().reset_index()
+    same_brand_details = same_brand_details.sort_values('流量', ascending=False).head(2)
+    same_brand_details['流量'] = same_brand_details['流量'] / 10000
+    
+    other_brand_details = relevant_data[
+        (relevant_data['标签类别'] == "期初_不同品牌不同产品") & 
+        (relevant_data['期末产品'] == product)
+    ].groupby('期初产品')['流量'].sum().reset_index()
+    other_brand_details = other_brand_details.sort_values('流量', ascending=False).head(2)
+    other_brand_details['流量'] = other_brand_details['流量'] / 10000
+    
+    report = f"期末分析报告：{product}\n\n"
+    report += f"产品期末总金额为{end_total:.2f}万。"
+    report += f"期初已使用本品并持续使用的金额为{same_product:.2f}万，占比{same_product/end_total*100:.2f}%；"
+    report += f"从同品牌其他产品转换而来的总金额为{same_brand_other:.2f}万，占比{same_brand_other/end_total*100:.2f}%，"
+    
+    if not same_brand_details.empty:
+        details = []
+        for i, row in same_brand_details.iterrows():
+            details.append(f"主要来源为{row['期初产品']}（金额{row['流量']:.2f}万，占比{row['流量']/end_total*100:.2f}%）")
+        report += "、".join(details) + "；"
+    else:
+        report += "无主要来源产品；"
+    
+    report += f"从其他品牌产品转换而来的总金额为{other_brand:.2f}万，占比{other_brand/end_total*100:.2f}%，"
+    
+    if not other_brand_details.empty:
+        details = []
+        for i, row in other_brand_details.iterrows():
+            details.append(f"主要来源为{row['期初产品']}（金额{row['流量']:.2f}万，占比{row['流量']/end_total*100:.2f}%）")
+        report += "、".join(details) + "；"
+    else:
+        report += "无主要来源产品；"
+    
+    report += f"新增门店带来的金额为{new_stores:.2f}万，占比{new_stores/end_total*100:.2f}%；"
+    report += f"新增用户带来的金额为{new_users:.2f}万，占比{new_users/end_total*100:.2f}%。\n\n"    
+    return report
+
+# 生成标签汇总报告
+def generate_label_summary(marked_data):
+    if marked_data is None or marked_data.empty:
+        return "无可用数据生成标签汇总报告。"
+    
+    relevant_data = marked_data[marked_data['标签类别'] != "不涉及目标产品"]
+    if relevant_data.empty:
+        return "无有效数据生成标签汇总报告。"
+    
+    total_flow = relevant_data['流量'].sum() / 10000
+    
+    if total_flow == 0:
+        return "总流量为0，无法生成标签汇总报告。"
+    
+    label_summary = relevant_data.groupby('标签类别')['流量'].sum().reset_index()
+    label_summary = label_summary.sort_values(
+        by='标签类别', 
+        key=lambda x: x.map(label_sort_mapping)
+    )
+    label_summary['流量'] = label_summary['流量'] / 10000
+    label_summary['占比'] = (label_summary['流量'] / total_flow) * 100
+    
+    gain_labels = ["期初_新增", "期初_不同品牌不同产品", "期初_同品牌不同产品"]
+    lost_labels = ["期末_同品牌不同产品", "期末_不同品牌不同产品", "期末_流失"]
+    remain_label = "同品牌同产品"
+    
+    gain_value = label_summary[label_summary['标签类别'].isin(gain_labels)]['占比'].sum()
+    lost_value = label_summary[label_summary['标签类别'].isin(lost_labels)]['占比'].sum()
+    remain_value = label_summary[label_summary['标签类别'] == remain_label]['占比'].sum() if remain_label in label_summary['标签类别'].values else 0
+    
+    lost_ratio_base_start = lost_value / (lost_value + remain_value) * 100 if (lost_value + remain_value) > 0 else 0
+    gain_ratio_base_end = gain_value / (gain_value + remain_value) * 100 if (gain_value + remain_value) > 0 else 0
+    start_end_comparison = (gain_value + remain_value) / (lost_value + remain_value) if (lost_value + remain_value) > 0 else 0
+    
+    report = "标签流量汇总分析\n\n"
+    report += f"总流量为{total_flow:.2f}万。"
+    
+    label_details = []
+    for _, row in label_summary.iterrows():
+        label = row['标签类别']
+        flow = row['流量']
+        percentage = row['占比']
+        label_details.append(f"{label}的金额为{flow:.2f}万，占比{percentage:.2f}%")
+    
+    report += "、".join(label_details) + "。\n\n"
+    
+    report += "核心指标分析：\n"
+    report += f"- Gain值（新增（新增+流入）：{gain_value:.2f}%\n"
+    report += f"- Lost值（流出+流失）：{lost_value:.2f}%\n"
+    report += f"- Remain值（留存）：{remain_value:.2f}%\n"
+    report += f"- 以期初为基准的Lost占比：{lost_ratio_base_start:.2f}%\n"
+    report += f"- 以期末为基准的Gain占比：{gain_ratio_base_end:.2f}%\n"
+    report += f"- 期初期末对比值：{start_end_comparison:.2f}倍"
+    
+    return report
 
 # 标题
-st.title("品牌流量桑基图分析工具")
+st.title("产品品牌流量分析工具（报告版）")
 
-# 参数设置区域
-st.subheader("分析参数设置")
-param_col1, param_col2 = st.columns(2)
+# 历史快照管理
+with st.expander("历史分析快照", expanded=True):
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.write("快照包含分析结果和可视化图表，关闭浏览器后不会丢失")
+    with col2:
+        if st.button("清空所有快照"):
+            if st.session_state.history_snapshots:
+                st.session_state.history_snapshots = []
+                save_snapshots_to_file([])
+                st.success("已清空所有历史快照")
+                st.rerun()
+            else:
+                st.info("没有快照可清空")
+    
+    # 显示快照列表
+    if not st.session_state.history_snapshots:
+        st.info("暂无分析快照，请先进行分析并生成结果")
+    else:
+        for idx, snapshot in enumerate(reversed(st.session_state.history_snapshots)):
+            meta = snapshot["metadata"]
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                st.write(f"**{snapshot['timestamp'].strftime('%Y-%m-%d %H:%M')}** - {meta['start_period']}至{meta['end_period']} - {meta['product']}")
+            with col2:
+                if st.button("查看", key=f"view_{idx}_{snapshot['id']}", help=f"查看快照 {snapshot['id'][-6:]}"):
+                    with st.spinner(f"正在加载快照 {snapshot['id'][-6:]}..."):
+                        load_success = load_from_snapshot(snapshot['id'])
+                        if load_success:
+                            st.success(f"已加载快照 {snapshot['id'][-6:]}")
+                            st.rerun()
+                        else:
+                            st.error(f"加载快照 {snapshot['id'][-6:]} 失败")
+            with col3:
+                if st.button("删除", key=f"del_{idx}_{snapshot['id']}", help=f"删除快照 {snapshot['id'][-6:]}"):
+                    delete_success = delete_snapshot(snapshot['id'])
+                    if delete_success:
+                        st.success(f"已删除快照 {snapshot['id'][-6:]}")
+                        st.rerun()
+                    else:
+                        st.error(f"删除快照 {snapshot['id'][-6:]} 失败")
 
-# 文件上传区域
-with param_col1:
-    uploaded_file = st.file_uploader("请上传Excel格式的数据文件（.xlsx）", type=["xlsx"])
+# 文件上传
+uploaded_file = st.file_uploader("上传Excel数据文件", type=["xlsx", "xls"])
 
-# 如果上传了文件，则进行后续参数设置
 if uploaded_file is not None:
-    # 读取数据以获取Q的可能值
+    st.session_state.uploaded_file_processed = True
+    
     df = pd.read_excel(uploaded_file)
-    if 'Q' not in df.columns:
-        st.error("上传的文件缺少必要的'Q'列")
+    st.session_state.original_df = df.copy()
+    
+    # 检查必要列
+    required_columns = ['Q', 'Passport_id', 'Value', 'product_st_new', 'brand']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        st.error(f"缺少必要的列: {', '.join(missing_columns)}")
         st.stop()
     
-    # 获取Q的唯一值并排序
     q_values = sorted(df['Q'].unique().tolist())
     
-    with param_col1:
-        # 期初和期末选择
-        col1, col2 = st.columns(2)
-        with col1:
-            start_period = st.selectbox("选择期初", q_values, index=0)
-            st.session_state.start_period = start_period
-        with col2:
-            end_period = st.selectbox("选择期末", q_values, index=min(1, len(q_values)-1))
-            st.session_state.end_period = end_period
+    # 产品-品牌映射
+    brand_mapping = df[['product_st_new', 'brand']].drop_duplicates().rename(
+        columns={'product_st_new': '产品', 'brand': '品牌'}
+    )
+    st.session_state.brand_mapping = brand_mapping
+    
+    # 检查未匹配品牌的产品
+    missing_brand_products = brand_mapping[brand_mapping['品牌'].isna() | (brand_mapping['品牌'] == '')]
+    if not missing_brand_products.empty:
+        st.warning(f"发现 {len(missing_brand_products)} 个产品未匹配到品牌信息")
+    
+    # 可用产品列表
+    special_tags = ["新增门店", "门店流失", "产品流失", "新增产品", "其他产品"]
+    available_products = [p for p in brand_mapping['产品'].unique() 
+                         if p not in special_tags and pd.notna(p)]
+    
+    # 参数设置
+    st.subheader("分析参数设置")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        start_period = st.selectbox("选择期初", q_values, index=0)
+        end_period = st.selectbox("选择期末", q_values, index=min(1, len(q_values)-1))
+        st.session_state.start_period = start_period
+        st.session_state.end_period = end_period
         
-        # 确保期初不等于期末
         if start_period == end_period:
-            st.error("期初和期末不能选择相同的值，请重新选择")
+            st.error("期初和期末不能相同，请重新选择")
             st.stop()
     
-    with param_col2:
-        # 其他参数设置
-        highlight_keyword = st.text_input("节点高亮关键词", "家乐")
-        st.session_state.highlight_keyword = highlight_keyword
-        
-        top_n_brands = st.slider("保留Top N品牌数量", 5, 20, 10)
-        
-        show_rank_value = st.checkbox("在节点标签中显示排名和数值", value=True)
-        st.session_state.show_rank_value = show_rank_value
-        
-        # 生成桑基图按钮
-        generate_chart = st.button("生成桑基图")
+    with col2:
+        if available_products:
+            st.session_state.selected_product = st.selectbox(
+                "选择要分析的产品", 
+                available_products,
+                index=0 if len(available_products) > 0 else None
+            )
+            
+            product_brand = brand_mapping[
+                brand_mapping['产品'] == st.session_state.selected_product
+            ]['品牌'].values[0] if st.session_state.selected_product in brand_mapping['产品'].values else "未知品牌"
+            
+            st.info(f"对应品牌: {product_brand}")
+        else:
+            st.warning("未找到可用产品数据")
     
-    # 当点击生成按钮时进行处理
-    if generate_chart:
-        with st.spinner("正在读取和处理数据..."):
-            # 统一Value U列名
-            if 'Value U' not in df.columns and 'Value' in df.columns:
-                df = df.rename(columns={'Value': 'Value U'})
-            
-            # 检查必要的列是否存在
-            required_columns = ['brand', 'Value U', 'Passport_id', 'Q']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-            if missing_columns:
-                st.error(f"上传的文件缺少必要的列: {', '.join(missing_columns)}")
-                st.stop()
-            
-            # 处理品牌列：聚合Value U并保留Top N品牌，统一品牌名称格式
-            df['brand_clean'] = df['brand'].str.strip().str.lower()  # 清洗品牌名称
-            brand_values = df.groupby('brand_clean')['Value U'].sum().reset_index()
-            brand_values_sorted = brand_values.sort_values('Value U', ascending=False)
-            top_brands = brand_values_sorted.head(top_n_brands)['brand_clean'].tolist()
-            df['brand_processed'] = df['brand_clean'].apply(lambda x: x if x in top_brands else '其他品牌')
-            
-            st.success(f"已处理品牌列，保留Top {top_n_brands}品牌，其余归为'其他品牌'")
+    with col3:
+        use_full_products = st.checkbox("全量输出所有产品", value=False)
+        if not use_full_products:
+            top_n = st.slider("展示的Top N产品数量", 5, 20, 10)
+        else:
+            st.slider("展示的Top N产品数量（全量模式禁用）", 5, 20, 10, disabled=True)
         
-        # 计算流向数据
-        with st.spinner("正在计算流向数据..."):
-            flow_results = []
+        generate_data = st.button("生成流量数据并分析")
+    
+    if generate_data and st.session_state.selected_product:
+        with st.spinner("正在处理数据..."):
+            # 数据处理逻辑
+            if 'Value U' not in df.columns:
+                df = df.rename(columns={'Value': 'Value U'})
+            df['product_processed'] = df['product_st_new']
             
-            # 按Passport_id分组处理
+            # 计算流向数据
+            flow_results = []
             for passport_id, group in df.groupby('Passport_id'):
-                # 检查是否有期初和期末数据
                 has_start = start_period in group['Q'].values
                 has_end = end_period in group['Q'].values
                 
-                # 场景1：只有期末（期末有值，期初无值）
+                # 新增用户
                 if not has_start and has_end:
-                    # 所有品牌都来自期初_新增门店
-                    brand_data = group[group['Q'] == end_period].groupby('brand_processed')['Value U'].sum().reset_index()
-                    for _, row in brand_data.iterrows():
+                    product_data = group[group['Q'] == end_period].groupby('product_processed')['Value U'].sum().reset_index()
+                    for _, row in product_data.iterrows():
                         flow_results.append({
-                            '起始点': f"期初_新增门店",
-                            '目标点': f"期末_{row['brand_processed']}",
+                            '期初产品': "新增门店",
+                            '期末产品': row['product_processed'],
                             '流量': row['Value U']
                         })
                     continue
                 
-                # 场景2：只有期初（期初有值，期末无值）
+                # 流失用户
                 if has_start and not has_end:
-                    # 所有品牌流向期末_门店流失
-                    brand_data = group[group['Q'] == start_period].groupby('brand_processed')['Value U'].sum().reset_index()
-                    for _, row in brand_data.iterrows():
+                    product_data = group[group['Q'] == start_period].groupby('product_processed')['Value U'].sum().reset_index()
+                    for _, row in product_data.iterrows():
                         flow_results.append({
-                            '起始点': f"期初_{row['brand_processed']}",
-                            '目标点': f"期末_门店流失",
+                            '期初产品': row['product_processed'],
+                            '期末产品': "门店流失",
                             '流量': row['Value U']
                         })
                     continue
                 
-                # 场景3：既有期初又有期末（处理完整流向）
+                # 既有期初又有期末
                 if has_start and has_end:
-                    # 按品牌聚合期初和期末的数据
-                    start_data = group[group['Q'] == start_period].groupby('brand_processed')['Value U'].sum().reset_index()
-                    end_data = group[group['Q'] == end_period].groupby('brand_processed')['Value U'].sum().reset_index()
+                    start_data = group[group['Q'] == start_period].copy()
+                    end_data = group[group['Q'] == end_period].copy()
                     
-                    start_dict = dict(zip(start_data['brand_processed'], start_data['Value U']))
-                    end_dict = dict(zip(end_data['brand_processed'], end_data['Value U']))
+                    start_agg = start_data.groupby('product_processed')['Value U'].sum().reset_index()
+                    end_agg = end_data.groupby('product_processed')['Value U'].sum().reset_index()
                     
-                    # 1. 相同品牌优先匹配
-                    common_brands = set(start_dict.keys()) & set(end_dict.keys())
-                    remaining_start = start_dict.copy()
-                    remaining_end = end_dict.copy()
+                    start_dict = {row['product_processed']: row['Value U'] for _, row in start_agg.iterrows()}
+                    end_dict = {row['product_processed']: row['Value U'] for _, row in end_agg.iterrows()}
                     
-                    for brand in common_brands:
-                        flow = min(start_dict[brand], end_dict[brand])
+                    # 相同产品留存
+                    same_products = set(start_dict.keys()) & set(end_dict.keys())
+                    for product in same_products:
+                        flow = min(start_dict[product], end_dict[product])
                         flow_results.append({
-                            '起始点': f"期初_{brand}",
-                            '目标点': f"期末_{brand}",
+                            '期初产品': product,
+                            '期末产品': product,
                             '流量': flow
                         })
-                        # 更新剩余量
-                        remaining_start[brand] -= flow
-                        remaining_end[brand] -= flow
-                        if remaining_start[brand] == 0:
-                            del remaining_start[brand]
-                        if remaining_end[brand] == 0:
-                            del remaining_end[brand]
+                        start_dict[product] -= flow
+                        end_dict[product] -= flow
+                        if start_dict[product] == 0: del start_dict[product]
+                        if end_dict[product] == 0: del end_dict[product]
                     
-                    # 2. 不同品牌随机匹配剩余量
-                    start_remaining = list(remaining_start.items())
-                    end_remaining = list(remaining_end.items())
+                    # 不同产品转换
+                    remaining_start = list(start_dict.items())
+                    remaining_end = list(end_dict.items())
                     
-                    while start_remaining and end_remaining:
-                        brand1, val1 = start_remaining[0]
-                        brand2, val2 = random.choice(end_remaining)
+                    while remaining_start and remaining_end:
+                        (s_product, s_val) = remaining_start[0]
+                        (e_product, e_val) = remaining_end[0]
                         
-                        flow = min(val1, val2)
+                        flow = min(s_val, e_val)
                         flow_results.append({
-                            '起始点': f"期初_{brand1}",
-                            '目标点': f"期末_{brand2}",
+                            '期初产品': s_product,
+                            '期末产品': e_product,
                             '流量': flow
                         })
                         
-                        # 更新剩余量
-                        if val1 == flow:
-                            start_remaining.pop(0)
+                        if s_val == flow:
+                            remaining_start.pop(0)
                         else:
-                            start_remaining[0] = (brand1, val1 - flow)
-                            
-                        idx = end_remaining.index((brand2, val2))
-                        if val2 == flow:
-                            end_remaining.pop(idx)
+                            remaining_start[0] = (s_product, s_val - flow)
+                        
+                        if e_val == flow:
+                            remaining_end.pop(0)
                         else:
-                            end_remaining[idx] = (brand2, val2 - flow)
+                            remaining_end[0] = (e_product, e_val - flow)
                     
-                    # 3. 处理最终余量
-                    # 期初剩余量流向期末_品类流失
-                    for brand, value in start_remaining:
+                    # 剩余流失
+                    for (s_product, s_val) in remaining_start:
                         flow_results.append({
-                            '起始点': f"期初_{brand}",
-                            '目标点': f"期末_品类流失",
-                            '流量': value
+                            '期初产品': s_product,
+                            '期末产品': "产品流失",
+                            '流量': s_val
                         })
                     
-                    # 期末剩余量来自期初_新增品类
-                    for brand, value in end_remaining:
+                    # 剩余新增
+                    for (e_product, e_val) in remaining_end:
                         flow_results.append({
-                            '起始点': f"期初_新增品类",
-                            '目标点': f"期末_{brand}",
-                            '流量': value
+                            '期初产品': "新增产品",
+                            '期末产品': e_product,
+                            '流量': e_val
                         })
             
-            # 确保flow_df包含正确的列名
-            st.session_state.flow_df = pd.DataFrame(flow_results, columns=['起始点', '目标点', '流量'])
-            st.success("流向数据计算完成")
+            # 合并流量数据
+            flow_df = pd.DataFrame(flow_results, columns=['期初产品', '期末产品', '流量'])
+            flow_df = flow_df.groupby(['期初产品', '期末产品'], as_index=False)['流量'].sum()
+            st.session_state.flow_df = flow_df
             
-            # 保存节点信息
-            st.session_state.source_nodes = st.session_state.flow_df['起始点'].unique().tolist()
-            st.session_state.target_nodes = st.session_state.flow_df['目标点'].unique().tolist()
-            
-            # 初始化选择
-            st.session_state.selected_sources = st.session_state.source_nodes
-            st.session_state.selected_targets = st.session_state.target_nodes
-    
-    # 只有当有数据时才显示筛选和图表
-    if st.session_state.flow_df is not None and not st.session_state.flow_df.empty:
-        # 验证必要的列是否存在
-        required_flow_columns = ['起始点', '目标点', '流量']
-        missing_flow_cols = [col for col in required_flow_columns if col not in st.session_state.flow_df.columns]
-        if missing_flow_cols:
-            st.error(f"流向数据缺少必要的列: {', '.join(missing_flow_cols)}")
-            st.stop()
-        
-        # 添加节点筛选区域
-        st.subheader("节点筛选")
-        filter_col1, filter_col2 = st.columns(2)
-        with filter_col1:
-            selected_sources = st.multiselect(
-                "选择要显示的期初节点",
-                st.session_state.source_nodes,
-                default=st.session_state.selected_sources
-            )
-            st.session_state.selected_sources = selected_sources
-        with filter_col2:
-            selected_targets = st.multiselect(
-                "选择要显示的期末节点",
-                st.session_state.target_nodes,
-                default=st.session_state.selected_targets
-            )
-            st.session_state.selected_targets = selected_targets
-        
-        # 应用筛选
-        filtered_flow_df = st.session_state.flow_df[
-            st.session_state.flow_df['起始点'].isin(st.session_state.selected_sources) & 
-            st.session_state.flow_df['目标点'].isin(st.session_state.selected_targets)
-        ]
-        
-        # 如果筛选后没有数据
-        if filtered_flow_df.empty:
-            st.warning("筛选后没有数据，请调整筛选条件")
-        else:
-            # 生成桑基图（基于筛选后的数据）
-            with st.spinner("正在生成桑基图..."):
-                # 确保聚合时使用正确的列名
-                aggregated_df = filtered_flow_df.groupby(['起始点', '目标点'], as_index=False)['流量'].sum()
+            # 打标分析
+            with st.spinner("正在打标分析..."):
+                brand_dict = dict(zip(brand_mapping['产品'], brand_mapping['品牌']))
+                marked_df = flow_df.copy()
                 
-                # 分离源节点和目标节点
-                source_nodes_unique = aggregated_df['起始点'].unique().tolist()
-                target_nodes_unique = aggregated_df['目标点'].unique().tolist()
+                marked_df['期初品牌'] = marked_df['期初产品'].apply(
+                    lambda x: brand_dict.get(x, x) if x not in special_tags else x
+                )
+                marked_df['期末品牌'] = marked_df['期末产品'].apply(
+                    lambda x: brand_dict.get(x, x) if x not in special_tags else x
+                )
                 
-                # 分别按流量排序
-                # 源节点按流出流量排序（降序）
-                source_flow = aggregated_df.groupby('起始点')['流量'].sum().reset_index()
-                source_flow.columns = ['节点', '总流量']
-                source_flow_sorted = source_flow.sort_values('总流量', ascending=False).reset_index(drop=True)
-                sorted_source_nodes = source_flow_sorted['节点'].tolist()
+                product_brand = brand_mapping[
+                    brand_mapping['产品'] == st.session_state.selected_product
+                ]['品牌'].values[0] if st.session_state.selected_product in brand_mapping['产品'].values else "未知品牌"
                 
-                # 目标节点按流入流量排序（降序）
-                target_flow = aggregated_df.groupby('目标点')['流量'].sum().reset_index()
-                target_flow.columns = ['节点', '总流量']
-                target_flow_sorted = target_flow.sort_values('总流量', ascending=False).reset_index(drop=True)
-                sorted_target_nodes = target_flow_sorted['节点'].tolist()
-                
-                # 合并节点列表（左侧源节点 + 右侧目标节点）
-                all_nodes = sorted_source_nodes + sorted_target_nodes
-                
-                # 创建节点索引映射
-                node_indices = {node: idx for idx, node in enumerate(all_nodes)}
-                
-                # 准备链接数据
-                links = {
-                    'source': [node_indices[src] for src in aggregated_df['起始点']],
-                    'target': [node_indices[tar] for tar in aggregated_df['目标点']],
-                    'value': aggregated_df['流量'].tolist()
-                }
-                
-                # 高亮指定关键词的节点
-                highlight_nodes = [node for node in all_nodes if st.session_state.highlight_keyword in str(node).lower()]
-                
-                # 生成清晰的蓝色系颜色变化 - 不使用背景色
-                def generate_clear_blue_variations(n):
-                    clear_blues = []
-                    for i in range(n):
-                        hue = 0.58  # 蓝色色相
-                        saturation = 0.3 + (i % 3) * 0.1  # 适中饱和度
-                        value = 0.9 + (i % 5) * 0.03  # 高明度
-                        r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
-                        clear_blues.append(f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})")  # 不透明
-                    return clear_blues
-                
-                # 生成清晰的蓝色系颜色
-                highlight_colors = generate_clear_blue_variations(len(highlight_nodes))
-                node_color_map = {node: color for node, color in zip(highlight_nodes, highlight_colors)}
-                
-                # 节点颜色设置：使用不透明色，无背景影响
-                node_colors = []
-                base_clear_blue = "rgb(220, 235, 255)"  # 基础浅蓝色（不透明）
-                
-                for node in all_nodes:
-                    if node in node_color_map:
-                        node_colors.append(node_color_map[node])
+                # 打标函数
+                def create_labels(row):
+                    if row['期末产品'] == st.session_state.selected_product:
+                        if row['期初产品'] in ["新增门店", "新增产品"]:
+                            return "期初_新增"
+                        
+                        start_product = row['期初产品']
+                        start_brand = row['期初品牌']
+                        
+                        if start_product == st.session_state.selected_product and start_brand == product_brand:
+                            return "同品牌同产品"
+                        elif start_brand == product_brand:
+                            return "期初_同品牌不同产品"
+                        else:
+                            return "期初_不同品牌不同产品"
+                    
+                    elif row['期初产品'] == st.session_state.selected_product:
+                        if row['期末产品'] in ["门店流失", "产品流失"]:
+                            return "期末_流失"
+                        
+                        end_product = row['期末产品']
+                        end_brand = row['期末品牌']
+                        
+                        if end_product == st.session_state.selected_product and end_brand == product_brand:
+                            return "同品牌同产品"
+                        elif end_brand == product_brand:
+                            return "期末_同品牌不同产品"
+                        else:
+                            return "期末_不同品牌不同产品"
+                    
                     else:
-                        node_colors.append(base_clear_blue)
+                        return "不涉及目标产品"
                 
-                # 链接颜色设置：轻微透明
-                link_colors = []
-                for src, tar in zip(aggregated_df['起始点'], aggregated_df['目标点']):
-                    if src in node_color_map:
-                        # 使用源节点颜色，轻微透明
-                        link_colors.append(node_color_map[src].replace("rgb", "rgba").replace(")", ", 0.7)"))
-                    elif tar in node_color_map:
-                        # 使用目标节点颜色，轻微透明
-                        link_colors.append(node_color_map[tar].replace("rgb", "rgba").replace(")", ", 0.7)"))
-                    else:
-                        # 非高亮节点的链接使用浅蓝色
-                        link_colors.append("rgba(220, 235, 255, 0.7)")
+                marked_df['标签类别'] = marked_df.apply(create_labels, axis=1)
+                st.session_state.marked_data = marked_df.drop(['期初品牌', '期末品牌'], axis=1)
                 
-                # 优化节点位置计算，避免重叠
-                source_count = len(sorted_source_nodes)
-                target_count = len(sorted_target_nodes)
-                total_nodes = len(all_nodes)
+                # 拆分流向 - 完整数据集
+                split_flow = []
+                for _, row in marked_df.iterrows():
+                    if row['标签类别'] != "不涉及目标产品":
+                        split_flow.append({
+                            '源节点': row['期初产品'],
+                            '目标节点': row['标签类别'],
+                            '流量': row['流量'],
+                            '流向类型': '期初到标签',
+                            '标签类别': row['标签类别']
+                        })
+                        split_flow.append({
+                            '源节点': row['标签类别'],
+                            '目标节点': row['期末产品'],
+                            '流量': row['流量'],
+                            '流向类型': '标签到期末',
+                            '标签类别': row['标签类别']
+                        })
                 
-                # 动态调整节点间距，节点越多间距越大
-                min_spacing = 0.05  # 最小间距
-                source_spacing = max(0.8 / max(source_count - 1, 1), min_spacing) if source_count > 1 else 0
-                target_spacing = max(0.8 / max(target_count - 1, 1), min_spacing) if target_count > 1 else 0
-                
-                # 水平位置控制（源节点在左，目标节点在右，增加间距）
-                node_x = [0.15 for _ in range(source_count)] + [0.85 for _ in range(target_count)]
-                
-                # 垂直位置控制（更均匀的分布算法）
-                node_y = []
-                # 源节点垂直分布
-                for i in range(source_count):
-                    if source_count == 1:
-                        node_y.append(0.5)  # 单个节点居中
-                    else:
-                        node_y.append(0.1 + i * source_spacing)
-                
-                # 目标节点垂直分布
-                for i in range(target_count):
-                    if target_count == 1:
-                        node_y.append(0.5)  # 单个节点居中
-                    else:
-                        node_y.append(0.1 + i * target_spacing)
-                
-                # 动态调整字体大小，避免文字拥挤
-                base_font_size = 12
-                font_size = max(8, base_font_size - (total_nodes // 10))  # 节点越多字体越小
-                
-                # 节点标签（精简标签内容，避免过长）
-                node_labels = []
-                # 源节点标签（转换为万单位）
-                for i, node in enumerate(sorted_source_nodes):
-                    flow = source_flow_sorted[source_flow_sorted['节点'] == node]['总流量'].values[0] / 10000
-                    if st.session_state.show_rank_value:
-                        # 精简标签，只保留关键信息
-                        node_name = node.replace("期初_", "")
-                        node_labels.append(f"S{i+1}. {node_name} ({flow:.1f}万)")
-                    else:
-                        node_labels.append(f"{node.replace('期初_', '')}")
-                
-                # 目标节点标签
-                for i, node in enumerate(sorted_target_nodes):
-                    flow = target_flow_sorted[target_flow_sorted['节点'] == node]['总流量'].values[0] / 10000
-                    if st.session_state.show_rank_value:
-                        node_name = node.replace("期末_", "")
-                        node_labels.append(f"T{i+1}. {node_name} ({flow:.1f}万)")
-                    else:
-                        node_labels.append(f"{node.replace('期末_', '')}")
-                
-                # 绘制桑基图，优化节点样式
-                fig = go.Figure(data=[go.Sankey(
-                    arrangement="snap",  # 禁用自动布局
-                    node=dict(
-                        pad=25,  # 增加节点间距
-                        thickness=40,  # 增加节点厚度
-                        line=dict(color="rgba(100, 150, 255, 0)", width=0),  # 隐藏边框
-                        label=node_labels,
-                        color=node_colors,
-                        x=node_x,
-                        y=node_y
-                    ),
-                    link=dict(
-                        source=links['source'],
-                        target=links['target'],
-                        value=links['value'],
-                        color=link_colors
+                split_flow_df = pd.DataFrame(split_flow)
+                if not split_flow_df.empty:
+                    split_flow_df = split_flow_df.groupby(
+                        ['源节点', '目标节点', '流向类型', '标签类别'], 
+                        as_index=False
+                    )['流量'].sum()
+                    
+                    # 排序
+                    split_flow_df['sort_key'] = split_flow_df['标签类别'].apply(
+                        lambda x: label_sort_mapping.get(x, len(LABEL_ORDER))
                     )
-                )])
-                
-                # 优化布局和字体渲染 - 使用微软雅黑，移除背景设置
-                fig.update_layout(
-                    title_text=f"品牌流量桑基图（{start_period} → {end_period}）- 筛选后",
-                    font=dict(
-                        family="Microsoft YaHei",  # 强制使用微软雅黑字体
-                        size=font_size,
-                        color="rgb(30, 30, 30)"  # 深灰色文字提高清晰度
-                    ),
-                    width=1400,
-                    height=max(source_count, target_count) * 50 + 200,
-                    margin=dict(l=120, r=120, t=80, b=80),
-                    paper_bgcolor="rgba(0,0,0,0)",  # 完全透明背景
-                    plot_bgcolor="rgba(0,0,0,0)"    # 图表区域透明
-                )
-                
-                st.success("桑基图生成完成")
-            
-            # 显示桑基图
-            st.subheader(f"品牌流量桑基图（{st.session_state.start_period} → {st.session_state.end_period}）")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 计算并显示流量占比数据（基于筛选后的数据）
-            with st.spinner("正在计算流量占比数据..."):
-                # 创建字典用于快速查找每个源节点和目标节点的总流量
-                source_total_flow = dict(zip(source_flow['节点'], source_flow['总流量']))
-                target_total_flow = dict(zip(target_flow['节点'], target_flow['总流量']))
-                
-                # 按源节点分组，计算每个目标节点的流量占比
-                result = []
-                
-                # 遍历每个源节点
-                for source in sorted_source_nodes:
-                    # 筛选出该源节点的所有流出数据
-                    source_data = aggregated_df[aggregated_df['起始点'] == source]
+                    sorted_split_df = split_flow_df.sort_values(
+                        by=['sort_key', '流量'], 
+                        ascending=[True, False]
+                    ).drop(columns=['sort_key'])
                     
-                    # 计算总流量
-                    total_source = source_total_flow[source]
+                    st.session_state.split_flow_data = split_flow_df
+                    st.session_state.sorted_split_data = sorted_split_df
+                else:
+                    st.warning("没有找到涉及目标产品的流量数据")
+            
+            # 处理期初产品筛选数据
+            with st.spinner("正在处理期初产品筛选数据..."):
+                if st.session_state.marked_data is not None:
+                    start_filtered_data = st.session_state.marked_data[
+                        st.session_state.marked_data['期初产品'] == st.session_state.selected_product
+                    ]
                     
-                    # 存储该源节点的所有流向信息
-                    flow_info = {
-                        '源节点': source,
-                        '源节点总流量': total_source / 10000,  # 转换为万单位
-                        '流向分布': []
-                    }
-                    
-                    # 遍历每个目标节点，计算占比
-                    for _, row in source_data.iterrows():
-                        # 确保使用正确的列名
-                        target = row['目标点']
-                        flow = row['流量']
-                        total_target = target_total_flow[target]
-                        
-                        # 计算占比（保留两位小数）
-                        pct_source = round((flow / total_source) * 100, 2)  # 占期初比
-                        pct_target = round((flow / total_target) * 100, 2)  # 占期末比
-                        
-                        flow_info['流向分布'].append({
-                            '目标节点': target,
-                            '流量': flow / 10000,  # 转换为万单位
-                            '占期初比(%)': pct_source,
-                            '占期末比(%)': pct_target
-                        })
-                    
-                    # 按占比降序排序
-                    flow_info['流向分布'].sort(key=lambda x: x['占期初比(%)'], reverse=True)
-                    result.append(flow_info)
-                
-                # 转换为DataFrame以便更好地查看
-                rows = []
-                for item in result:
-                    for flow in item['流向分布']:
-                        rows.append({
-                            '源节点': item['源节点'],
-                            '源节点总流量(万)': item['源节点总流量'],
-                            '目标节点': flow['目标节点'],
-                            '流量(万)': flow['流量'],
-                            '占期初比(%)': flow['占期初比(%)'],
-                            '占期末比(%)': flow['占期末比(%)']
-                        })
-                
-                percentage_df = pd.DataFrame(rows)
-                st.success("流量占比数据计算完成")
-            
-            # 显示流量占比数据（主要输出）
-            st.subheader("流量占比详细数据（筛选后）")
-            st.dataframe(percentage_df)
-            
-            # 生成品牌分析报告
-            st.subheader("品牌流量分析报告")
-            
-            # 提取筛选后的品牌（仅包含选中的节点）
-            filtered_brands = []
-            
-            # 从筛选的源节点中提取品牌
-            for node in st.session_state.selected_sources:
-                if "期初_" in node:
-                    brand = node.split("_", 1)[1]
-                    if brand not in ["新增门店", "新增品类", "门店流失", "品类流失", "其他品牌"]:
-                        filtered_brands.append(brand)
-            
-            # 从筛选的目标节点中提取品牌
-            for node in st.session_state.selected_targets:
-                if "期末_" in node:
-                    brand = node.split("_", 1)[1]
-                    if brand not in ["新增门店", "新增品类", "门店流失", "品类流失", "其他品牌"] and brand not in filtered_brands:
-                        filtered_brands.append(brand)
-            
-            # 确保按节点顺序排序（源节点顺序优先）
-            sorted_brands = []
-            # 首先添加源节点中的品牌（按源节点顺序）
-            for node in sorted_source_nodes:
-                if "期初_" in node:
-                    brand = node.split("_", 1)[1]
-                    if brand in filtered_brands and brand not in sorted_brands:
-                        sorted_brands.append(brand)
-            
-            # 然后添加仅在目标节点中的品牌（按目标节点顺序）
-            for node in sorted_target_nodes:
-                if "期末_" in node:
-                    brand = node.split("_", 1)[1]
-                    if brand in filtered_brands and brand not in sorted_brands:
-                        sorted_brands.append(brand)
-            
-            # 为每个筛选后的品牌生成分析报告（按排序后的顺序）
-            for brand in sorted_brands:
-                # 1. 品牌A的期初分析
-                start_node = f"期初_{brand}"
-                if start_node in source_total_flow and start_node in st.session_state.selected_sources:
-                    start_total = source_total_flow[start_node] / 10000  # 转换为万单位
-                    st.write(f"**{brand} 期初分析**")
-                    
-                    # 筛选该品牌的所有流向
-                    brand_flows = percentage_df[percentage_df['源节点'] == start_node]
-                    
-                    # 保留的数据
-                    retain_flow = 0
-                    retain_pct = 0
-                    # 转换到其他品牌的数据
-                    convert_flows = []
-                    # 流失数据（细分门店流失和品类流失）
-                    store_loss_flow = 0  # 门店流失
-                    store_loss_pct = 0
-                    category_loss_flow = 0  # 品类流失
-                    category_loss_pct = 0
-                    
-                    for _, row in brand_flows.iterrows():
-                        target = row['目标节点']
-                        if f"期末_{brand}" == target and target in st.session_state.selected_targets:
-                            retain_flow = row['流量(万)']
-                            retain_pct = row['占期初比(%)']
-                        elif "期末_门店流失" == target and target in st.session_state.selected_targets:
-                            store_loss_flow = row['流量(万)']
-                            store_loss_pct = row['占期初比(%)']
-                        elif "期末_品类流失" == target and target in st.session_state.selected_targets:
-                            category_loss_flow = row['流量(万)']
-                            category_loss_pct = row['占期初比(%)']
-                        elif "期末_" in target and target in st.session_state.selected_targets:
-                            target_brand = target.split("_", 1)[1]
-                            if target_brand != brand:
-                                convert_flows.append({
-                                    'brand': target_brand,
-                                    'flow': row['流量(万)'],
-                                    'pct': row['占期初比(%)']
+                    if not start_filtered_data.empty:
+                        split_flow_start = []
+                        for _, row in start_filtered_data.iterrows():
+                            if row['标签类别'] != "不涉及目标产品":
+                                split_flow_start.append({
+                                    '源节点': row['期初产品'],
+                                    '目标节点': row['标签类别'],
+                                    '流量': row['流量'],
+                                    '流向类型': '期初到标签',
+                                    '标签类别': row['标签类别']
                                 })
-                    
-                    # 生成期初分析文本
-                    report_text = f"{brand}，期初金额{start_total:.1f}万，"
-                    report_text += f"期末仍旧使用{brand}的金额{retain_flow:.1f}万，占比{retain_pct}%；"
-                    
-                    # 添加转换到其他品牌的信息
-                    for cf in convert_flows[:3]:  # 只显示前3个主要转换
-                        report_text += f"转换为{cf['brand']}的金额{cf['flow']:.1f}万，占比{cf['pct']}%；"
-                    
-                    # 明确区分门店流失和品类流失
-                    report_text += f"门店流失金额{store_loss_flow:.1f}万，占比{store_loss_pct}%；"
-                    report_text += f"品类流失金额{category_loss_flow:.1f}万，占比{category_loss_pct}%；"
-                    
-                    st.write(report_text)
-                
-                # 2. 品牌A的期末分析
-                end_node = f"期末_{brand}"
-                target_total = target_flow_sorted[target_flow_sorted['节点'] == end_node]['总流量'].values[0] / 10000 if (end_node in target_flow_sorted['节点'].values and end_node in st.session_state.selected_targets) else 0
-                
-                if target_total > 0:
-                    st.write(f"**{brand} 期末分析**")
-                    
-                    # 筛选流向该品牌的所有来源
-                    brand_inflows = percentage_df[percentage_df['目标节点'] == end_node]
-                    
-                    # 保留的数据（来自同一品牌）
-                    retain_flow = 0
-                    retain_pct = 0
-                    # 从其他品牌转换来的数据
-                    convert_flows = []
-                    # 新增数据（细分新增门店和新增品类）
-                    new_store_flow = 0  # 新增门店
-                    new_store_pct = 0
-                    new_category_flow = 0  # 新增品类
-                    new_category_pct = 0
-                    
-                    # 计算总流入量
-                    total_inflow = brand_inflows['流量(万)'].sum()
-                    
-                    for _, row in brand_inflows.iterrows():
-                        source = row['源节点']
-                        if f"期初_{brand}" == source and source in st.session_state.selected_sources:
-                            retain_flow = row['流量(万)']
-                            retain_pct = row['占期末比(%)']
-                        elif "期初_新增门店" == source and source in st.session_state.selected_sources:
-                            new_store_flow = row['流量(万)']
-                            new_store_pct = row['占期末比(%)']
-                        elif "期初_新增品类" == source and source in st.session_state.selected_sources:
-                            new_category_flow = row['流量(万)']
-                            new_category_pct = row['占期末比(%)']
-                        elif "期初_" in source and source in st.session_state.selected_sources:
-                            source_brand = source.split("_", 1)[1]
-                            if source_brand != brand:
-                                convert_flows.append({
-                                    'brand': source_brand,
-                                    'flow': row['流量(万)'],
-                                    'pct': row['占期末比(%)']
+                                split_flow_start.append({
+                                    '源节点': row['标签类别'],
+                                    '目标节点': row['期末产品'],
+                                    '流量': row['流量'],
+                                    '流向类型': '标签到期末',
+                                    '标签类别': row['标签类别']
                                 })
+                        
+                        split_flow_start_df = pd.DataFrame(split_flow_start)
+                        if not split_flow_start_df.empty:
+                            split_flow_start_df = split_flow_start_df.groupby(
+                                ['源节点', '目标节点', '流向类型', '标签类别'], 
+                                as_index=False
+                            )['流量'].sum()
+                            
+                            split_flow_start_df['sort_key'] = split_flow_start_df['标签类别'].apply(
+                                lambda x: label_sort_mapping.get(x, len(LABEL_ORDER))
+                            )
+                            sorted_split_start_df = split_flow_start_df.sort_values(
+                                by=['sort_key', '流量'], 
+                                ascending=[True, False]
+                            ).drop(columns=['sort_key'])
+                            
+                            st.session_state.split_flow_data_start = split_flow_start_df
+                            st.session_state.sorted_split_data_start = sorted_split_start_df
+            
+            # 处理期末产品筛选数据
+            with st.spinner("正在处理期末产品筛选数据..."):
+                if st.session_state.marked_data is not None:
+                    end_filtered_data = st.session_state.marked_data[
+                        st.session_state.marked_data['期末产品'] == st.session_state.selected_product
+                    ]
                     
-                    # 生成期末分析文本
-                    report_text = f"{brand}，期末金额{target_total:.1f}万，"
-                    report_text += f"来自期初{brand}的金额{retain_flow:.1f}万，占比{retain_pct:.2f}%；"
-                    
-                    # 添加从其他品牌转换来的信息
-                    for cf in convert_flows[:3]:  # 只显示前3个主要来源
-                        report_text += f"从{cf['brand']}转换来的金额{cf['flow']:.1f}万，占比{cf['pct']:.2f}%；"
-                    
-                    # 明确区分新增门店和新增品类
-                    report_text += f"新增门店金额{new_store_flow:.1f}万，占比{new_store_pct:.2f}%；"
-                    report_text += f"新增品类金额{new_category_flow:.1f}万，占比{new_category_pct:.2f}%；"
-                    
-                    st.write(report_text)
+                    if not end_filtered_data.empty:
+                        split_flow_end = []
+                        for _, row in end_filtered_data.iterrows():
+                            if row['标签类别'] != "不涉及目标产品":
+                                split_flow_end.append({
+                                    '源节点': row['期初产品'],
+                                    '目标节点': row['标签类别'],
+                                    '流量': row['流量'],
+                                    '流向类型': '期初到标签',
+                                    '标签类别': row['标签类别']
+                                })
+                                split_flow_end.append({
+                                    '源节点': row['标签类别'],
+                                    '目标节点': row['期末产品'],
+                                    '流量': row['流量'],
+                                    '流向类型': '标签到期末',
+                                    '标签类别': row['标签类别']
+                                })
+                        
+                        split_flow_end_df = pd.DataFrame(split_flow_end)
+                        if not split_flow_end_df.empty:
+                            split_flow_end_df = split_flow_end_df.groupby(
+                                ['源节点', '目标节点', '流向类型', '标签类别'], 
+                                as_index=False
+                            )['流量'].sum()
+                            
+                            split_flow_end_df['sort_key'] = split_flow_end_df['标签类别'].apply(
+                                lambda x: label_sort_mapping.get(x, len(LABEL_ORDER))
+                            )
+                            sorted_split_end_df = split_flow_end_df.sort_values(
+                                by=['sort_key', '流量'], 
+                                ascending=[True, False]
+                            ).drop(columns=['sort_key'])
+                            
+                            st.session_state.split_flow_data_end = split_flow_end_df
+                            st.session_state.sorted_split_data_end = sorted_split_end_df
+            
+            # 生成桑基图
+            with st.spinner("正在生成可视化图表..."):
+                # 计算TopN产品
+                all_products = pd.unique(st.session_state.sorted_split_data[['源节点', '目标节点']].values.ravel('K')) if st.session_state.sorted_split_data is not None else []
+                product_traffic = {}
                 
-                st.write("---")  # 分隔线
+                for product in all_products:
+                    if product not in special_tags and product not in MIDDLE_LAYER_ORDER:
+                        source_flow = st.session_state.sorted_split_data[
+                            st.session_state.sorted_split_data['源节点'] == product
+                        ]['流量'].sum() if st.session_state.sorted_split_data is not None else 0
+                        target_flow = st.session_state.sorted_split_data[
+                            st.session_state.sorted_split_data['目标节点'] == product
+                        ]['流量'].sum() if st.session_state.sorted_split_data is not None else 0
+                        product_traffic[product] = source_flow + target_flow
+                
+                # 选择TopN产品
+                if product_traffic and not use_full_products:
+                    sorted_products = sorted(product_traffic.items(), key=lambda x: x[1], reverse=True)
+                    st.session_state.top_products = [p[0] for p in sorted_products[:top_n]]
+                    st.info(f"已选择流量最高的Top {top_n} 产品")
+                else:
+                    st.session_state.top_products = None
+                
+                # 生成完整图表
+                if st.session_state.sorted_split_data is not None and not st.session_state.sorted_split_data.empty:
+                    st.session_state.sankey_fig = generate_sorted_sankey(
+                        st.session_state.sorted_split_data,
+                        top_products=st.session_state.top_products,
+                        use_full_products=use_full_products
+                    )
+                
+                # 生成期初产品筛选图表
+                if st.session_state.sorted_split_data_start is not None and not st.session_state.sorted_split_data_start.empty:
+                    st.session_state.sankey_fig_start = generate_sorted_sankey(
+                        st.session_state.sorted_split_data_start,
+                        top_products=st.session_state.top_products,
+                        use_full_products=use_full_products
+                    )
+                
+                # 生成期末产品筛选图表
+                if st.session_state.sorted_split_data_end is not None and not st.session_state.sorted_split_data_end.empty:
+                    st.session_state.sankey_fig_end = generate_sorted_sankey(
+                        st.session_state.sorted_split_data_end,
+                        top_products=st.session_state.top_products,
+                        use_full_products=use_full_products
+                    )
             
-            # 提供数据下载功能
-            st.subheader("数据下载（筛选后）")
-            download_col1, download_col2 = st.columns(2)
-            
-            with download_col1:
-                # 流向数据下载（转换为万单位）
-                flow_for_download = filtered_flow_df.copy()
-                flow_for_download['流量'] = flow_for_download['流量'] / 10000
-                flow_for_download = flow_for_download.rename(columns={'流量': '流量(万)'})
-                flow_csv = flow_for_download.to_csv(index=False)
-                st.download_button(
-                    label="下载筛选后的流向数据",
-                    data=flow_csv,
-                    file_name=f"筛选后_桑基图流向数据_{st.session_state.start_period}_to_{st.session_state.end_period}.csv",
-                    mime="text/csv",
-                )
-            
-            with download_col2:
-                # 流量占比数据下载
-                percentage_csv = percentage_df.to_csv(index=False)
-                st.download_button(
-                    label="下载筛选后的流量占比数据",
-                    data=percentage_csv,
-                    file_name=f"筛选后_桑基图流量占比数据_{st.session_state.start_period}_to_{st.session_state.end_period}.csv",
-                    mime="text/csv",
-                )
-else:
-    st.info("请上传数据文件以开始分析（支持Excel格式）")
+            # 保存快照
+            save_success = save_snapshot(start_period, end_period, st.session_state.selected_product)
+            if save_success:
+                st.success("分析完成并已保存快照")
+            else:
+                st.success("分析完成")
     
+    # 显示分析结果
+    if st.session_state.sorted_split_data is not None and not st.session_state.sorted_split_data.empty:
+        # 显示桑基图
+        st.subheader("📊 流量可视化图表")
+        
+        # 完整桑基图
+        st.subheader("完整产品流量桑基图")
+        if st.session_state.sankey_fig is not None:
+            st.plotly_chart(st.session_state.sankey_fig, use_container_width=True, config={'displayModeBar': True})
+        else:
+            st.warning("无法生成完整桑基图")
+        
+        # 期初产品筛选桑基图
+        if st.session_state.sorted_split_data_start is not None and not st.session_state.sorted_split_data_start.empty:
+            st.subheader(f"期初产品 = {st.session_state.selected_product} 的流量桑基图")
+            if st.session_state.sankey_fig_start is not None:
+                st.plotly_chart(st.session_state.sankey_fig_start, use_container_width=True, config={'displayModeBar': True})
+        
+        # 期末产品筛选桑基图
+        if st.session_state.sorted_split_data_end is not None and not st.session_state.sorted_split_data_end.empty:
+            st.subheader(f"期末产品 = {st.session_state.selected_product} 的流量桑基图")
+            if st.session_state.sankey_fig_end is not None:
+                st.plotly_chart(st.session_state.sankey_fig_end, use_container_width=True, config={'displayModeBar': True})
+        
+        # 显示报告
+        st.subheader("📋 分析报告")
+        
+        # 生成并显示期末分析报告
+        end_report = generate_end_report(st.session_state.marked_data, st.session_state.selected_product)
+        st.markdown(end_report)
+        
+        # 生成并显示期初分析报告
+        start_report = generate_start_report(st.session_state.marked_data, st.session_state.selected_product)
+        st.markdown(start_report)
+        
+        # 生成并显示标签汇总报告
+        label_report = generate_label_summary(st.session_state.marked_data)
+        st.markdown(label_report)
+        
+        # 下载结果
+        st.subheader("💾 下载分析结果")
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            if st.session_state.marked_data is not None:
+                st.session_state.marked_data.to_excel(writer, index=False, sheet_name='原始打标数据')
+            
+            st.session_state.sorted_split_data.drop(columns=['标签类别']).to_excel(
+                writer, index=False, sheet_name='完整拆分流向数据'
+            )
+            
+            if st.session_state.sorted_split_data_start is not None and not st.session_state.sorted_split_data_start.empty:
+                st.session_state.sorted_split_data_start.drop(columns=['标签类别']).to_excel(
+                    writer, index=False, sheet_name='期初产品筛选数据'
+                )
+            
+            if st.session_state.sorted_split_data_end is not None and not st.session_state.sorted_split_data_end.empty:
+                st.session_state.sorted_split_data_end.drop(columns=['标签类别']).to_excel(
+                    writer, index=False, sheet_name='期末产品筛选数据'
+                )
+            
+            if st.session_state.top_products:
+                pd.DataFrame({'TopN产品': st.session_state.top_products}).to_excel(
+                    writer, index=False, sheet_name='TopN产品列表'
+                )
+        
+        output.seek(0)
+        if st.session_state.selected_product and st.session_state.start_period and st.session_state.end_period:
+            st.download_button(
+                "下载完整结果（Excel）",
+                data=output,
+                file_name=f"{st.session_state.start_period}_to_{st.session_state.end_period}_{st.session_state.selected_product}_结果.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        # 当前快照信息
+        if st.session_state.current_snapshot_id:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.info(f"当前分析已保存为快照 (ID: {st.session_state.current_snapshot_id[-6:]})")
+            with col2:
+                if st.button("重新保存快照") and st.session_state.start_period and st.session_state.selected_product:
+                    save_success = save_snapshot(st.session_state.start_period, st.session_state.end_period, st.session_state.selected_product)
+                    if save_success:
+                        st.success("已重新保存快照")
+elif uploaded_file is None:
+    # 如果有加载的快照，显示结果
+    if st.session_state.sorted_split_data is not None and not st.session_state.sorted_split_data.empty:
+        st.info("显示已加载的快照数据")
+        
+        # 显示桑基图
+        st.subheader("📊 流量可视化图表")
+        
+        # 完整桑基图
+        st.subheader("完整产品流量桑基图")
+        if st.session_state.sankey_fig is not None:
+            st.plotly_chart(st.session_state.sankey_fig, use_container_width=True, config={'displayModeBar': True})
+        
+        # 期初产品筛选桑基图
+        if st.session_state.sorted_split_data_start is not None and not st.session_state.sorted_split_data_start.empty:
+            st.subheader(f"期初产品 = {st.session_state.selected_product} 的流量桑基图")
+            if st.session_state.sankey_fig_start is not None:
+                st.plotly_chart(st.session_state.sankey_fig_start, use_container_width=True, config={'displayModeBar': True})
+        
+        # 期末产品筛选桑基图
+        if st.session_state.sorted_split_data_end is not None and not st.session_state.sorted_split_data_end.empty:
+            st.subheader(f"期末产品 = {st.session_state.selected_product} 的流量桑基图")
+            if st.session_state.sankey_fig_end is not None:
+                st.plotly_chart(st.session_state.sankey_fig_end, use_container_width=True, config={'displayModeBar': True})
+        
+        # 显示报告
+        st.subheader("📋 分析报告")
+        
+        # 生成并显示期末分析报告
+        end_report = generate_end_report(st.session_state.marked_data, st.session_state.selected_product)
+        st.markdown(end_report)
+        
+        # 生成并显示期初分析报告
+        start_report = generate_start_report(st.session_state.marked_data, st.session_state.selected_product)
+        st.markdown(start_report)
+        
+        # 生成并显示标签汇总报告
+        label_report = generate_label_summary(st.session_state.marked_data)
+        st.markdown(label_report)
+    
+    else:
+        st.info("请上传包含以下列的数据文件：Passport_id, Value, Q, product_st_new, brand")
