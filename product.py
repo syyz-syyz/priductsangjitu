@@ -1032,7 +1032,7 @@ if uploaded_file is not None:
                                 as_index=False
                             )['流量'].sum()
                             
-                            split_flow_start_df['sort_key'] = split_flow_start_df['标签类别'].apply(['标签类别']
+                            split_flow_start_df['sort_key'] = split_flow_start_df['标签类别'].apply(['标签类别'](
                                 lambda x: label_sort_mapping.get(x, len(LABEL_ORDER))
                             )
                             sorted_split_start_df = split_flow_start_df.sort_values(
