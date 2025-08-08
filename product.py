@@ -4,9 +4,10 @@ import numpy as np
 import random
 import plotly.graph_objects as go
 import colorsys
+from app import check_token
 
-
-
+# 定义需要校验的token
+VALID_TOKEN = "mUo2TJ3PC3pqddAmQ3Wq2ZnxnEjAq1yd"
 # 初始化session_state
 if 'flow_df' not in st.session_state:
     st.session_state.flow_df = None
@@ -34,7 +35,7 @@ st.set_page_config(
     layout="wide"  # 使用宽布局增加空间
 )
 
-
+check_token()
 # 标题
 st.title("品牌流量桑基图分析工具")
 
@@ -302,7 +303,7 @@ if uploaded_file is not None:
                 # 高亮指定关键词的节点
                 highlight_nodes = [node for node in all_nodes if st.session_state.highlight_keyword in str(node).lower()]
                 
-                # 生成清晰的蓝色系颜色变化 - 不使用背景色
+                # 生成清晰的蓝色系颜色变化 - 不使用透明色
                 def generate_clear_blue_variations(n):
                     clear_blues = []
                     for i in range(n):
@@ -317,7 +318,7 @@ if uploaded_file is not None:
                 highlight_colors = generate_clear_blue_variations(len(highlight_nodes))
                 node_color_map = {node: color for node, color in zip(highlight_nodes, highlight_colors)}
                 
-                # 节点颜色设置：使用不透明色，无背景影响
+                # 节点颜色设置：使用不透明色
                 node_colors = []
                 base_clear_blue = "rgb(220, 235, 255)"  # 基础浅蓝色（不透明）
                 
@@ -327,18 +328,18 @@ if uploaded_file is not None:
                     else:
                         node_colors.append(base_clear_blue)
                 
-                # 链接颜色设置：降低透明度以减少重影影响
+                # 链接颜色设置：使用不透明色
                 link_colors = []
                 for src, tar in zip(aggregated_df['起始点'], aggregated_df['目标点']):
                     if src in node_color_map:
-                        # 使用源节点颜色，降低透明度
-                        link_colors.append(node_color_map[src].replace("rgb", "rgba").replace(")", ", 0.5)"))
+                        # 使用源节点颜色
+                        link_colors.append(node_color_map[src])
                     elif tar in node_color_map:
-                        # 使用目标节点颜色，降低透明度
-                        link_colors.append(node_color_map[tar].replace("rgb", "rgba").replace(")", ", 0.5)"))
+                        # 使用目标节点颜色
+                        link_colors.append(node_color_map[tar])
                     else:
                         # 非高亮节点的链接使用浅蓝色
-                        link_colors.append("rgba(220, 235, 255, 0.5)")
+                        link_colors.append("rgb(220, 235, 255)")
                 
                 # 优化节点位置计算，避免重叠
                 source_count = len(sorted_source_nodes)
@@ -346,7 +347,7 @@ if uploaded_file is not None:
                 total_nodes = len(all_nodes)
                 
                 # 动态调整节点间距，节点越多间距越大
-                min_spacing = 0.08  # 增大最小间距，减少重叠
+                min_spacing = 0.05  # 最小间距
                 source_spacing = max(0.8 / max(source_count - 1, 1), min_spacing) if source_count > 1 else 0
                 target_spacing = max(0.8 / max(target_count - 1, 1), min_spacing) if target_count > 1 else 0
                 
@@ -394,13 +395,13 @@ if uploaded_file is not None:
                     else:
                         node_labels.append(f"{node.replace('期末_', '')}")
                 
-                # 绘制桑基图，优化节点样式，解决重影问题
+                # 绘制桑基图，优化节点样式
                 fig = go.Figure(data=[go.Sankey(
-                    arrangement="perpendicular",  # 使用更稳定的布局算法
+                    arrangement="snap",  # 禁用自动布局
                     node=dict(
-                        pad=40,  # 增大节点间距，减少重叠
-                        thickness=30,  # 适当减小厚度
-                        line=dict(color="rgba(100, 150, 255, 0.3)", width=1),  # 轻微边框区分节点
+                        pad=25,  # 增加节点间距
+                        thickness=40,  # 增加节点厚度
+                        line=dict(color="black", width=0.5),  # 添加细边框避免模糊
                         label=node_labels,
                         color=node_colors,
                         x=node_x,
@@ -410,31 +411,38 @@ if uploaded_file is not None:
                         source=links['source'],
                         target=links['target'],
                         value=links['value'],
-                        color=link_colors,
-                        line=dict(width=0)  # 移除链接边框，减少重影
+                        color=link_colors  # 使用不透明颜色
                     )
                 )])
                 
-                # 优化布局和字体渲染 - 适配Streamlit Cloud环境
+                # 优化布局和字体渲染 - 使用通用字体，白色背景
                 fig.update_layout(
                     title_text=f"品牌流量桑基图（{start_period} → {end_period}）- 筛选后",
                     font=dict(
-                        family="Microsoft YaHei, SimHei, sans-serif",  # 增加备选字体
+                        family="Arial, sans-serif",  # 使用通用字体
                         size=font_size,
-                        color="rgb(30, 30, 30)"  # 深灰色文字提高清晰度
+                        color="black"  # 纯黑色文字
                     ),
-                    # 移除固定宽度，使用自适应
-                    height=max(source_count, target_count) * 60 + 200,  # 增大高度系数
-                    margin=dict(l=80, r=80, t=80, b=80),  # 优化边距
-                    paper_bgcolor="rgba(0,0,0,0)",  # 完全透明背景
-                    plot_bgcolor="rgba(0,0,0,0)"    # 图表区域透明
+                    width=1400,
+                    height=max(source_count, target_count) * 50 + 200,
+                    margin=dict(l=120, r=120, t=80, b=80),
+                    paper_bgcolor="white",  # 白色背景
+                    plot_bgcolor="white"    # 白色背景
                 )
+                
+                # 配置高分辨率导出选项
+                config = {
+                    'toImageButtonOptions': {
+                        'format': 'png',  # 使用PNG格式
+                        'scale': 2  # 提高分辨率
+                    }
+                }
                 
                 st.success("桑基图生成完成")
             
             # 显示桑基图
             st.subheader(f"品牌流量桑基图（{st.session_state.start_period} → {st.session_state.end_period}）")
-            st.plotly_chart(fig, use_container_width=True)  # 强制自适应容器
+            st.plotly_chart(fig, use_container_width=True, config=config)
             
             # 计算并显示流量占比数据（基于筛选后的数据）
             with st.spinner("正在计算流量占比数据..."):
