@@ -12,4 +12,4 @@ Pillow
 numpy
 retrying
 zipfile36
-plotly==6.2.0
+plotly==5.15.0
