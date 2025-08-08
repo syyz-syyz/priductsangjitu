@@ -206,7 +206,7 @@ def delete_snapshot(snapshot_id):
         st.error(f"删除快照时出错: {str(e)}")
         return False
 
-# 生成桑基图函数（修复标签重影问题）
+# 生成桑基图函数（优化标签重影问题）
 def generate_sorted_sankey(split_flow_data, top_products=None, use_full_products=False):
     def aggregate_node(node, top_products, use_full_products):
         if use_full_products or not top_products:
@@ -290,22 +290,28 @@ def generate_sorted_sankey(split_flow_data, top_products=None, use_full_products
     
     layer2_labels_with_percent = []
     for node in layer2_nodes:
+        # 优化标签长度，避免过长导致重叠
+        short_label = node.replace("不同品牌不同产品", "跨品牌").replace("同品牌不同产品", "同品牌跨产品")
         if total_middle_inflow > 0:
             percentage = (middle_layer_inflows[node] / total_middle_inflow) * 100
-            layer2_labels_with_percent.append(f"{node}\n{round(percentage)}%")
+            layer2_labels_with_percent.append(f"{short_label}\n{round(percentage)}%")
         else:
-            layer2_labels_with_percent.append(node)
+            layer2_labels_with_percent.append(short_label)
     
     # 关键修复2：标签与去重节点一一对应
     labels = []
     for node in unique_nodes:
         if node in layer1_nodes:
-            labels.append(node)
+            # 简化期初节点标签
+            simplified = node.replace("期初_", "")
+            labels.append(simplified)
         elif node in layer2_nodes:
             idx = layer2_nodes.index(node)
             labels.append(layer2_labels_with_percent[idx])
         elif node in layer3_nodes:
-            labels.append(node)
+            # 简化期末节点标签
+            simplified = node.replace("期末_", "")
+            labels.append(simplified)
     
     node_indices = {node: idx for idx, node in enumerate(unique_nodes)}
     
@@ -343,92 +349,117 @@ def generate_sorted_sankey(split_flow_data, top_products=None, use_full_products
     
     # 关键修复3：优化节点位置计算（避免重叠）
     node_x, node_y = [], []
+    vertical_padding = 0.1  # 上下边距
+    vertical_range = 1.0 - 2 * vertical_padding  # 可用垂直空间
     
-    # 第一层节点位置（x固定0.1，y轴均匀分布在0.2-0.8之间）
+    # 第一层节点位置（x固定0.15，增加水平间距）
     level_count = len(layer1_nodes)
     for i in range(level_count):
-        node_x.append(0.1)
+        node_x.append(0.15)  # 增加x值，远离左侧边缘
         if level_count == 1:
             node_y.append(0.5)  # 单个节点居中
         else:
-            # 缩小分布范围，避免边缘溢出
-            node_y.append(0.2 + (0.6 / (level_count - 1)) * i)
+            # 更均匀的垂直分布
+            node_y.append(vertical_padding + (vertical_range / (level_count - 1)) * i)
     
-    # 第二层节点位置（x固定0.5）
+    # 第二层节点位置（x固定0.5，中间位置）
     level_count = len(layer2_nodes)
     for i in range(level_count):
         node_x.append(0.5)
         if level_count == 1:
             node_y.append(0.5)
         else:
-            node_y.append(0.2 + (0.6 / (level_count - 1)) * i)
+            node_y.append(vertical_padding + (vertical_range / (level_count - 1)) * i)
     
-    # 第三层节点位置（x固定0.9）
+    # 第三层节点位置（x固定0.85，增加水平间距）
     level_count = len(layer3_nodes)
     for i in range(level_count):
-        node_x.append(0.9)
+        node_x.append(0.85)  # 减小x值，远离右侧边缘
         if level_count == 1:
             node_y.append(0.5)
         else:
-            node_y.append(0.2 + (0.6 / (level_count - 1)) * i)
+            node_y.append(vertical_padding + (vertical_range / (level_count - 1)) * i)
     
-    # 创建桑基图（关键修复4：禁用自动排列，使用手动坐标）
+    # 创建桑基图（关键修复4：增强渲染配置）
     fig = go.Figure(data=[go.Sankey(
-        arrangement="none",  # 禁用自动排列，避免与手动坐标冲突
+        arrangement="none",  # 禁用自动排列，使用手动坐标
         node=dict(
-            pad=15,  # 增加节点间距
-            thickness=20,
-            line=dict(color="black", width=0.5),
+            pad=20,  # 增大节点间距，减少重叠
+            thickness=25,  # 增加节点厚度
+            line=dict(color="black", width=1),  # 更清晰的节点边框
             label=labels,
             color=node_colors,
             x=node_x,
-            y=node_y
+            y=node_y,
+            # 优化字体配置，解决云环境字体问题
+            textfont=dict(
+                family="SimHei, Microsoft YaHei, Heiti TC, Arial, sans-serif",
+                size=11,
+                color="rgb(30, 30, 30)"
+            )
         ),
         link=dict(
             source=links_source,
             target=links_target,
             value=links_value,
-            color=link_colors
+            color=link_colors,
+            line=dict(width=0.5)  # 链接线优化
         )
     )])
     
-    # 添加图例
+    # 添加图例（优化布局）
     legend_items = []
     for item in MIDDLE_LAYER_CONFIG:
         try:
             rgba_str = item["color"].replace("rgba", "").replace("(", "").replace(")", "")
             r, g, b = map(lambda x: int(float(x.strip())), rgba_str.split(",")[:3])
-            legend_items.append(f'<span style="color:rgb({r},{g},{b})">●</span> {item["label"]}')
+            short_label = item["label"].replace("不同品牌不同产品", "跨品牌").replace("同品牌不同产品", "同品牌跨产品")
+            legend_items.append(f'<span style="color:rgb({r},{g},{b})">●</span> {short_label}')
         except:
             legend_items.append(f'<span style="color:gray">●</span> {item["label"]}')
     
-    fig.add_annotation(
-        text=" ".join(legend_items),
-        x=0.5, y=1.05,
-        xref="paper", yref="paper",
-        showarrow=False, font=dict(size=10),
-        align="center"
-    )
+    # 图例分行显示，避免水平溢出
+    legend_chunk_size = 3
+    legend_rows = []
+    for i in range(0, len(legend_items), legend_chunk_size):
+        legend_rows.append(" ".join(legend_items[i:i+legend_chunk_size]))
     
-    # 图表尺寸
+    for i, row in enumerate(legend_rows):
+        fig.add_annotation(
+            text=row,
+            x=0.5, y=1.05 + (i * 0.05),  # 垂直排列图例
+            xref="paper", yref="paper",
+            showarrow=False, 
+            font=dict(
+                family="SimHei, Microsoft YaHei, Arial",
+                size=10
+            ),
+            align="center"
+        )
+    
+    # 图表尺寸和布局优化
     max_level_count = max(len(layer1_nodes), len(layer2_nodes), len(layer3_nodes))
-    height = max_level_count * 50 + 200
-    height = min(max(height, 500), 800)  # 适当增加最大高度
+    height = max_level_count * 60 + 250  # 基于节点数量动态调整高度
+    height = min(max(height, 600), 1000)  # 限制最大最小高度
     
-    # 关键修复5：优化字体兼容性
+    # 关键修复5：增强字体兼容性和布局稳定性
     fig.update_layout(
-        title_text="产品流量三层桑基图（中间节点带百分比）",
+        title_text="产品流量三层桑基图分析",
         font=dict(
-            family="SimHei, Microsoft YaHei, Arial",  # 兼容多环境字体
-            size=10,  # 略微增大字体避免重叠
+            family="SimHei, Microsoft YaHei, Heiti TC, Arial, sans-serif",
+            size=12,
             color="rgb(30, 30, 30)"
         ),
-        width=800,  # 增加宽度
+        width=1000,  # 增加宽度，提供更多空间
         height=height,
-        margin=dict(l=80, r=80, t=100, b=60),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)"
+        margin=dict(l=100, r=100, t=120 + (len(legend_rows)*30), b=80),  # 根据图例行数调整顶部边距
+        paper_bgcolor="rgba(255, 255, 255, 1)",  # 白色背景，增强对比度
+        plot_bgcolor="rgba(255, 255, 255, 1)"
     )
+    
+    # 禁用自动缩放，保持布局一致性
+    fig.update_xaxes(autorange=False)
+    fig.update_yaxes(autorange=False)
     
     return fig
 
@@ -1001,7 +1032,7 @@ if uploaded_file is not None:
                                 as_index=False
                             )['流量'].sum()
                             
-                            split_flow_start_df['sort_key'] = split_flow_start_df['标签类别'].apply(
+                            split_flow_start_df['sort_key'] = split_flow_start_df['标签类别'].apply(['标签类别'].apply(
                                 lambda x: label_sort_mapping.get(x, len(LABEL_ORDER))
                             )
                             sorted_split_start_df = split_flow_start_df.sort_values(
