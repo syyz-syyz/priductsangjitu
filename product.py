@@ -3,14 +3,13 @@ import pandas as pd
 import numpy as np
 import random
 import colorsys
-from app import check_token
+
 # 导入pyecharts相关库
 from pyecharts import options as opts
 from pyecharts.charts import Sankey
 from streamlit_echarts import st_echarts
 
-# 定义需要校验的token
-VALID_TOKEN = "mUo2TJ3PC3pqddAmQ3Wq2ZnxnEjAq1yd"
+
 # 初始化session_state
 if 'flow_df' not in st.session_state:
     st.session_state.flow_df = None
@@ -38,7 +37,7 @@ st.set_page_config(
     layout="wide"  # 使用宽布局增加空间
 )
 
-check_token()
+
 # 标题
 st.title("品牌流量桑基图分析工具")
 
