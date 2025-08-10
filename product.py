@@ -37,7 +37,6 @@ st.set_page_config(
     layout="wide"  # 使用宽布局增加空间
 )
 
-
 # 标题
 st.title("品牌流量桑基图分析工具")
 
@@ -366,27 +365,22 @@ if uploaded_file is not None:
                         "lineStyle": {"color": link_color, "opacity": 0.7}
                     })
                 
-                # 创建pyecharts桑基图
-                sankey = (
-                    Sankey()
-                    .add(
-                        "品牌流量",  # 系列名称
-                        nodes,  # 节点列表
-                        links,  # 链接列表
-                        # 节点样式设置
-                        itemstyle_opts=opts.ItemStyleOpts(border_width=0),
-                        # 线条样式设置
-                        linestyle_opts=opts.LineStyleOpts(curve=0.5, color="source"),
-                        # 布局设置
-                        layout_iterations=32,  # 布局迭代次数，控制节点分布
-                    )
-                    .set_global_opts(
-                        title_opts=opts.TitleOpts(
-                            title=f"品牌流量桑基图（{start_period} → {end_period}）- 筛选后",
-                            title_textstyle_opts=opts.TextStyleOpts(font_size=16)
-                        ),
-                        tooltip_opts=opts.TooltipOpts(trigger="item", trigger_on="mousemove"),
-                    )
+                # 创建pyecharts桑基图 - 修复参数错误
+                sankey = Sankey()
+                sankey.add(
+                    series_name="品牌流量",
+                    nodes=nodes,
+                    links=links,
+                    itemstyle_opts=opts.ItemStyleOpts(border_width=0),
+                    linestyle_opts=opts.LineStyleOpts(curve=0.5, color="source"),
+                    layout_iterations=32
+                )
+                sankey.set_global_opts(
+                    title_opts=opts.TitleOpts(
+                        title=f"品牌流量桑基图（{start_period} → {end_period}）- 筛选后",
+                        title_textstyle_opts=opts.TextStyleOpts(font_size=16)
+                    ),
+                    tooltip_opts=opts.TooltipOpts(trigger="item", trigger_on="mousemove"),
                 )
                 
                 # 转换为配置项字典（供streamlit_echarts使用）
