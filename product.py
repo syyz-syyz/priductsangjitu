@@ -4,12 +4,12 @@ import numpy as np
 import random
 import colorsys
 
-# 导入pyecharts相关库
 from pyecharts import options as opts
 from pyecharts.charts import Sankey
 from streamlit_echarts import st_echarts
 
-
+# 定义需要校验的token
+VALID_TOKEN = "mUo2TJ3PC3pqddAmQ3Wq2ZnxnEjAq1yd"
 # 初始化session_state
 if 'flow_df' not in st.session_state:
     st.session_state.flow_df = None
@@ -36,6 +36,7 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"  # 使用宽布局增加空间
 )
+
 
 # 标题
 st.title("品牌流量桑基图分析工具")
@@ -313,26 +314,6 @@ if uploaded_file is not None:
                 # 节点颜色设置：基础浅蓝色
                 base_clear_blue = "#dcebff"  # 基础浅蓝色
                 
-                # 节点标签（精简标签内容）
-                node_labels = []
-                # 源节点标签（转换为万单位）
-                for i, node in enumerate(sorted_source_nodes):
-                    flow = source_flow_sorted[source_flow_sorted['节点'] == node]['总流量'].values[0] / 10000
-                    if st.session_state.show_rank_value:
-                        node_name = node.replace("期初_", "")
-                        node_labels.append(f"S{i+1}. {node_name} ({flow:.1f}万)")
-                    else:
-                        node_labels.append(f"{node.replace('期初_', '')}")
-                
-                # 目标节点标签
-                for i, node in enumerate(sorted_target_nodes):
-                    flow = target_flow_sorted[target_flow_sorted['节点'] == node]['总流量'].values[0] / 10000
-                    if st.session_state.show_rank_value:
-                        node_name = node.replace("期末_", "")
-                        node_labels.append(f"T{i+1}. {node_name} ({flow:.1f}万)")
-                    else:
-                        node_labels.append(f"{node.replace('期末_', '')}")
-                
                 # 准备pyecharts所需的数据格式
                 # 节点列表：[{"name": "节点名", "itemStyle": {"color": "颜色"}}]
                 nodes = []
@@ -343,65 +324,75 @@ if uploaded_file is not None:
                         "itemStyle": {"color": color}
                     })
                 
-                # 链接列表：[{"source": "源节点", "target": "目标节点", "value": 流量, "lineStyle": {"color": "颜色"}}]
+                # 链接列表：[{"source": "源节点", "target": "目标节点", "value": 流量}]
                 links = []
                 for _, row in aggregated_df.iterrows():
                     src = row['起始点']
                     tar = row['目标点']
                     value = row['流量']
-                    
-                    # 确定链接颜色
-                    if src in node_color_map:
-                        link_color = node_color_map[src]
-                    elif tar in node_color_map:
-                        link_color = node_color_map[tar]
-                    else:
-                        link_color = base_clear_blue
-                    
                     links.append({
                         "source": src,
                         "target": tar,
-                        "value": value,
-                        "lineStyle": {"color": link_color, "opacity": 0.7}
+                        "value": value
                     })
                 
-                # 创建pyecharts桑基图 - 修复参数错误
+                # 创建pyecharts桑基图 - 使用更兼容的参数格式
                 sankey = Sankey()
-                sankey.add(
-                    series_name="品牌流量",
-                    nodes=nodes,
-                    links=links,
-                    itemstyle_opts=opts.ItemStyleOpts(border_width=0),
-                    linestyle_opts=opts.LineStyleOpts(curve=0.5, color="source"),
-                    layout_iterations=32
-                )
+                
+                # 配置系列选项
+                series_options = {
+                    "name": "品牌流量",
+                    "type": "sankey",
+                    "layout": "none",  # 不使用自动布局
+                    "data": nodes,
+                    "links": links,
+                    "itemStyle": {
+                        "borderWidth": 0
+                    },
+                    "lineStyle": {
+                        "color": "source",
+                        "curveness": 0.5,
+                        "opacity": 0.7
+                    },
+                    "label": {
+                        "fontSize": 12,
+                        "fontFamily": "Microsoft YaHei"
+                    },
+                    "nodeWidth": 30,
+                    "nodeGap": 20
+                }
+                
+                # 添加系列数据
+                sankey.add_js_funcs("""
+                    chart.setOption({
+                        series: [{{ series_options }}]
+                    });
+                """.replace("{{ series_options }}", str(series_options).replace("'", '"')))
+                
+                # 设置全局选项
                 sankey.set_global_opts(
                     title_opts=opts.TitleOpts(
                         title=f"品牌流量桑基图（{start_period} → {end_period}）- 筛选后",
                         title_textstyle_opts=opts.TextStyleOpts(font_size=16)
                     ),
-                    tooltip_opts=opts.TooltipOpts(trigger="item", trigger_on="mousemove"),
+                    tooltip_opts=opts.TooltipOpts(
+                        trigger="item", 
+                        trigger_on="mousemove",
+                        formatter="{b}: {c}"
+                    ),
                 )
                 
-                # 转换为配置项字典（供streamlit_echarts使用）
+                # 转换为配置项字典
                 chart_options = sankey.dump_options()
                 
-                # 调整图表大小和字体
-                chart_options["tooltip"] = {
-                    "trigger": "item",
-                    "triggerOn": "mousemove",
-                    "formatter": "{b}: {c}"
-                }
-                chart_options["series"][0]["label"] = {
-                    "fontSize": 12,
-                    "fontFamily": "Microsoft YaHei"
-                }
-                chart_options["series"][0]["nodeWidth"] = 30  # 节点宽度
-                chart_options["series"][0]["nodeGap"] = 20  # 节点间距
+                # 手动添加系列配置（确保兼容性）
+                if "series" not in chart_options:
+                    chart_options["series"] = []
+                chart_options["series"].append(series_options)
                 
                 st.success("桑基图生成完成")
             
-            # 显示桑基图（使用streamlit_echarts）
+            # 显示桑基图
             st.subheader(f"品牌流量桑基图（{st.session_state.start_period} → {st.session_state.end_period}）")
             st_echarts(
                 options=chart_options,
@@ -409,7 +400,7 @@ if uploaded_file is not None:
                 width="100%"
             )
             
-            # 计算并显示流量占比数据（基于筛选后的数据）
+            # 计算并显示流量占比数据（后续代码保持不变）
             with st.spinner("正在计算流量占比数据..."):
                 # 创建字典用于快速查找每个源节点和目标节点的总流量
                 source_total_flow = dict(zip(source_flow['节点'], source_flow['总流量']))
@@ -471,14 +462,14 @@ if uploaded_file is not None:
                 percentage_df = pd.DataFrame(rows)
                 st.success("流量占比数据计算完成")
             
-            # 显示流量占比数据（主要输出）
+            # 显示流量占比数据
             st.subheader("流量占比详细数据（筛选后）")
             st.dataframe(percentage_df)
             
-            # 生成品牌分析报告
+            # 生成品牌分析报告（后续代码保持不变）
             st.subheader("品牌流量分析报告")
             
-            # 提取筛选后的品牌（仅包含选中的节点）
+            # 提取筛选后的品牌
             filtered_brands = []
             
             # 从筛选的源节点中提取品牌
@@ -495,23 +486,23 @@ if uploaded_file is not None:
                     if brand not in ["新增门店", "新增品类", "门店流失", "品类流失", "其他品牌"] and brand not in filtered_brands:
                         filtered_brands.append(brand)
             
-            # 确保按节点顺序排序（源节点顺序优先）
+            # 确保按节点顺序排序
             sorted_brands = []
-            # 首先添加源节点中的品牌（按源节点顺序）
+            # 首先添加源节点中的品牌
             for node in sorted_source_nodes:
                 if "期初_" in node:
                     brand = node.split("_", 1)[1]
                     if brand in filtered_brands and brand not in sorted_brands:
                         sorted_brands.append(brand)
             
-            # 然后添加仅在目标节点中的品牌（按目标节点顺序）
+            # 然后添加仅在目标节点中的品牌
             for node in sorted_target_nodes:
                 if "期末_" in node:
                     brand = node.split("_", 1)[1]
                     if brand in filtered_brands and brand not in sorted_brands:
                         sorted_brands.append(brand)
             
-            # 为每个筛选后的品牌生成分析报告（按排序后的顺序）
+            # 为每个筛选后的品牌生成分析报告
             for brand in sorted_brands:
                 # 1. 品牌A的期初分析
                 start_node = f"期初_{brand}"
@@ -527,7 +518,7 @@ if uploaded_file is not None:
                     retain_pct = 0
                     # 转换到其他品牌的数据
                     convert_flows = []
-                    # 流失数据（细分门店流失和品类流失）
+                    # 流失数据
                     store_loss_flow = 0  # 门店流失
                     store_loss_pct = 0
                     category_loss_flow = 0  # 品类流失
@@ -558,7 +549,7 @@ if uploaded_file is not None:
                     report_text += f"期末仍旧使用{brand}的金额{retain_flow:.1f}万，占比{retain_pct}%；"
                     
                     # 添加转换到其他品牌的信息
-                    for cf in convert_flows[:3]:  # 只显示前3个主要转换
+                    for cf in convert_flows[:3]:
                         report_text += f"转换为{cf['brand']}的金额{cf['flow']:.1f}万，占比{cf['pct']}%；"
                     
                     # 明确区分门店流失和品类流失
@@ -577,12 +568,12 @@ if uploaded_file is not None:
                     # 筛选流向该品牌的所有来源
                     brand_inflows = percentage_df[percentage_df['目标节点'] == end_node]
                     
-                    # 保留的数据（来自同一品牌）
+                    # 保留的数据
                     retain_flow = 0
                     retain_pct = 0
                     # 从其他品牌转换来的数据
                     convert_flows = []
-                    # 新增数据（细分新增门店和新增品类）
+                    # 新增数据
                     new_store_flow = 0  # 新增门店
                     new_store_pct = 0
                     new_category_flow = 0  # 新增品类
@@ -616,7 +607,7 @@ if uploaded_file is not None:
                     report_text += f"来自期初{brand}的金额{retain_flow:.1f}万，占比{retain_pct:.2f}%；"
                     
                     # 添加从其他品牌转换来的信息
-                    for cf in convert_flows[:3]:  # 只显示前3个主要来源
+                    for cf in convert_flows[:3]:
                         report_text += f"从{cf['brand']}转换来的金额{cf['flow']:.1f}万，占比{cf['pct']:.2f}%；"
                     
                     # 明确区分新增门店和新增品类
@@ -632,7 +623,7 @@ if uploaded_file is not None:
             download_col1, download_col2 = st.columns(2)
             
             with download_col1:
-                # 流向数据下载（转换为万单位）
+                # 流向数据下载
                 flow_for_download = filtered_flow_df.copy()
                 flow_for_download['流量'] = flow_for_download['流量'] / 10000
                 flow_for_download = flow_for_download.rename(columns={'流量': '流量(万)'})
@@ -655,3 +646,4 @@ if uploaded_file is not None:
                 )
 else:
     st.info("请上传数据文件以开始分析（支持Excel格式）")
+    
