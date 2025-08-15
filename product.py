@@ -56,8 +56,7 @@ fig.update_traces(
             family=["SimHei", "Heiti TC", "黑体"],  # 兼容不同系统的黑体字体
             size=14,
             color="black",                          # 纯黑色文字
-            # 以下设置确保无艺术字效果
-            shadow=False,                           # 关闭阴影
+            # 以下设置确保无艺术字效果                          # 关闭阴影
             weight="normal"                         # 正常字重（非加粗）
         )
     )
