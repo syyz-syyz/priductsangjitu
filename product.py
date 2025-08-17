@@ -1,25 +1,18 @@
 import streamlit as st
 import plotly.graph_objects as go
 
-# 设置页面配置
-st.set_page_config(page_title="修复后的桑基图", layout="wide")
+st.set_page_config(page_title="带update_traces的桑基图", layout="wide")
 
-st.title("修复后的桑基图（无错误版本）")
+st.title("桑基图（含update_traces用法）")
 
-# 创建桑基图数据（移除不支持的参数）
+# 创建基础桑基图数据
 def create_sankey_data():
     return go.Sankey(
         node=dict(
+            label=["产品A", "产品B", "华东", "华南", "华北"],
             pad=15,
             thickness=20,
-            line=dict(color="black", width=0.5),
-            label=["产品A", "产品B", "华东", "华南", "华北"],
-            # 初始字体设置（仅保留Plotly支持的参数）
-            font=dict(
-                family="SimHei",  # 黑体
-                size=14,
-                color="black"     # 仅支持color、family、size等基础属性
-            )
+            line=dict(color="black", width=0.5)
         ),
         link=dict(
             source=[0, 0, 1, 1],
@@ -31,35 +24,42 @@ def create_sankey_data():
 # 创建图表
 fig = go.Figure(data=[create_sankey_data()])
 
-# 布局设置（全局字体）
+# 全局布局设置
 fig.update_layout(
-    title_text="节点标签样式调整（修复后）",
+    title_text="使用update_traces修改节点样式",
     font=dict(
-        family="SimHei",
-        size=16,
-        color="black"
+        family="SimHei, Heiti TC, 黑体",
+        size=14
     ),
     width=1000,
-    height=600,
-    margin=dict(l=50, r=50, t=80, b=50),
-    paper_bgcolor="white",
-    plot_bgcolor="white"
+    height=600
 )
 
-# 修改节点标签样式（仅保留支持的参数）
+# 关键：正确使用update_traces修改节点样式（只使用支持的参数）
 fig.update_traces(
     node=dict(
+        # 节点颜色（支持）
+        color=["#FF6347", "#4682B4", "#3CB371", "#FFD700", "#9370DB"],
+        # 节点标签字体（支持）
         font=dict(
-            family=["SimHei", "Heiti TC", "黑体"],  # 兼容多系统黑体
+            family="SimHei",  # 黑体
             size=14,
+            color="white",    # 白色文字（与节点颜色对比）
+            weight="bold"     # 加粗（支持的参数）
+        ),
+        # 节点边框（支持）
+        line=dict(
             color="black",
-            weight="normal"  # 合法参数：normal/bold/light
-            # 移除 shadow=False（Plotly不支持该参数）
+            width=1.5
         )
+    ),
+    # 可以同时修改连线样式
+    link=dict(
+        color="rgba(120, 120, 120, 0.6)"  # 半透明灰色连线
     )
 )
 
 # 显示图表
 st.plotly_chart(fig, use_container_width=True)
 
-st.info("错误已修复：移除了Plotly不支持的`shadow`参数，仅保留合法的字体属性（family/size/color/weight）")
+st.info("已恢复update_traces：仅使用Plotly明确支持的参数（color、font、line等），避免错误")
