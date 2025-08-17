@@ -1,9 +1,9 @@
 import streamlit as st
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="带update_traces的桑基图", layout="wide")
+st.set_page_config(page_title="桑基图安全版本", layout="wide")
 
-st.title("桑基图（含update_traces用法）")
+st.title("桑基图（安全参数版本）")
 
 # 创建基础桑基图数据
 def create_sankey_data():
@@ -26,40 +26,36 @@ fig = go.Figure(data=[create_sankey_data()])
 
 # 全局布局设置
 fig.update_layout(
-    title_text="使用update_traces修改节点样式",
+    title_text="桑基图（安全参数配置）",
     font=dict(
-        family="SimHei, Heiti TC, 黑体",
-        size=14
+        family="SimHei, Heiti TC, 黑体",  # 全局字体设置
+        size=14,
+        color="black"
     ),
     width=1000,
-    height=600
+    height=600,
+    margin=dict(l=50, r=50, t=80, b=50)
 )
 
-# 关键：正确使用update_traces修改节点样式（只使用支持的参数）
+# 最简化的update_traces配置（只使用经过验证的参数）
 fig.update_traces(
     node=dict(
-        # 节点颜色（支持）
-        color=["#FF6347", "#4682B4", "#3CB371", "#FFD700", "#9370DB"],
-        # 节点标签字体（支持）
+        # 节点颜色（支持单颜色或颜色列表）
+        color="lightblue",
+        # 节点标签字体（仅保留最基础参数）
         font=dict(
-            family="SimHei",  # 黑体
+            family="SimHei",
             size=14,
-            color="white",    # 白色文字（与节点颜色对比）
-            weight="bold"     # 加粗（支持的参数）
-        ),
-        # 节点边框（支持）
-        line=dict(
-            color="black",
-            width=1.5
+            color="black"
         )
     ),
-    # 可以同时修改连线样式
+    # 连线样式（使用基础参数）
     link=dict(
-        color="rgba(120, 120, 120, 0.6)"  # 半透明灰色连线
+        color="gray"
     )
 )
 
 # 显示图表
 st.plotly_chart(fig, use_container_width=True)
 
-st.info("已恢复update_traces：仅使用Plotly明确支持的参数（color、font、line等），避免错误")
+st.success("已使用最安全的参数配置：仅保留Plotly所有版本都支持的基础属性，避免参数冲突")
