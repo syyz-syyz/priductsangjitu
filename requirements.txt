@@ -1,7 +1,2 @@
-streamlit
-pandas
-numpy
-plotly
-openpyxl
-pyecharts
-streamlit_echarts
+streamlit==1.20.0
+plotly==5.15.0
