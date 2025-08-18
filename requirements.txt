@@ -1,2 +1,15 @@
 streamlit==1.22.0
-plotly>=5.15.0
+pandas
+openpyxl
+xlsxwriter
+python-dateutil
+jieba
+thefuzz
+pytz
+numpy
+python-pptx
+Pillow
+numpy
+retrying
+zipfile36
+plotly==6.2.0
