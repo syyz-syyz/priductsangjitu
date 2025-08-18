@@ -4,9 +4,7 @@ import numpy as np
 import random
 import plotly.graph_objects as go
 import colorsys
-from app import check_token
-# 定义需要校验的token
-VALID_TOKEN = "mUo2TJ3PC3pqddAmQ3Wq2ZnxnEjAq1yd"
+
 # 初始化session_state
 if 'flow_df' not in st.session_state:
     st.session_state.flow_df = None
@@ -33,7 +31,7 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"  # 使用宽布局增加空间
 )
-check_token()
+
 # 标题
 st.title("品牌流量桑基图分析工具")
 
